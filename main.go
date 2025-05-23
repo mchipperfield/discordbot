@@ -84,6 +84,7 @@ func main() {
 	slog.Info("websocket established")
 
 	defer func() {
+		slog.Info("closing websocket")
 		if err := session.Close(); err != nil {
 			slog.Info("error closing websocket", "error", err)
 		}
