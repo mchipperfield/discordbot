@@ -29,7 +29,7 @@ var quotes = []string{
 }
 
 // Server2985 is the guild id for the SD server.
-const Server2985 = "133967162088069943"
+const Server2985 = "1339671620880699433"
 
 func main() {
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
