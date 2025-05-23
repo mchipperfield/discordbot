@@ -1,13 +1,17 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
+	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/peterbourgon/ff"
 
@@ -31,6 +35,8 @@ var quotes = []string{
 // Server2985 is the guild id for the SD server.
 const Server2985 = "1339671620880699433"
 
+var buffer = make([][]byte, 0)
+
 func main() {
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var (
@@ -42,6 +48,11 @@ func main() {
 		ff.WithEnvVarNoPrefix(),
 	); err != nil {
 		slog.Info("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
+
+	if err := loadSound("wake_up.dca"); err != nil {
+		slog.Info("failed to load sound", "error", err)
 		os.Exit(1)
 	}
 
@@ -75,6 +86,37 @@ func main() {
 				slog.Info("failed to send message", "error", err, "channel", m.ChannelID)
 			}
 		}
+
+		if strings.Contains(m.Content, "tired") {
+
+			guild, err := s.State.Guild(m.GuildID)
+			if err != nil {
+				slog.Info("failed to get guild", "id", m.GuildID, "error", err)
+			}
+			for _, vs := range guild.VoiceStates {
+				if vs.UserID == m.Author.ID {
+					slog.Info("found user in voice channel", "id", vs.ChannelID, "user", m.Author.ID)
+					vc, err := s.ChannelVoiceJoin(m.GuildID, vs.ChannelID, false, false)
+					if err != nil {
+						slog.Info("failed to join voice channel", "error", err, "id", vs.ChannelID)
+					}
+
+					if err := vc.Speaking(true); err != nil {
+						slog.Info("failed to start speaking", "error", err)
+					}
+					time.Sleep(250 * time.Millisecond)
+					for _, buf := range buffer {
+						vc.OpusSend <- buf
+					}
+
+					if err := vc.Speaking(false); err != nil {
+						slog.Info("failed to start speaking", "error", err)
+					}
+					vc.Disconnect()
+				}
+			}
+
+		}
 	})
 
 	if err := session.Open(); err != nil {
@@ -96,4 +138,47 @@ func main() {
 
 	slog.Info("signal received", "signal", sig)
 
+}
+
+// loadSound copy/pasta from the !airhorn example at bwmarrin/godiscord
+func loadSound(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		fmt.Println("Error opening dca file :", err)
+		return err
+	}
+
+	var opuslen int16
+
+	for {
+		// Read opus frame length from dca file.
+		err = binary.Read(file, binary.LittleEndian, &opuslen)
+
+		// If this is the end of the file, just return.
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			err := file.Close()
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+
+		if err != nil {
+			fmt.Println("Error reading from dca file :", err)
+			return err
+		}
+
+		// Read encoded pcm from dca file.
+		InBuf := make([]byte, opuslen)
+		err = binary.Read(file, binary.LittleEndian, &InBuf)
+
+		// Should not be any end of file errors
+		if err != nil {
+			fmt.Println("Error reading from dca file :", err)
+			return err
+		}
+
+		// Append encoded pcm data to the buffer.
+		buffer = append(buffer, InBuf)
+	}
 }
