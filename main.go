@@ -95,7 +95,6 @@ func main() {
 			}
 			for _, vs := range guild.VoiceStates {
 				if vs.UserID == m.Author.ID {
-					slog.Info("found user in voice channel", "id", vs.ChannelID, "user", m.Author.ID)
 					vc, err := s.ChannelVoiceJoin(m.GuildID, vs.ChannelID, false, false)
 					if err != nil {
 						slog.Info("failed to join voice channel", "error", err, "id", vs.ChannelID)
