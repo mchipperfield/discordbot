@@ -60,7 +60,7 @@ func wakeUp(serverId string, opus [][]byte) func(s *discordgo.Session, m *discor
 			return
 		}
 
-		if strings.Contains(m.Content, "tired") {
+		if strings.Contains(strings.ToLower(m.Content), "tired") {
 
 			guild, err := s.State.Guild(m.GuildID)
 			if err != nil {
