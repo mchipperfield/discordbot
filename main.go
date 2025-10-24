@@ -28,16 +28,21 @@ var quotes = []string{
 	"Up the Spurs!",
 	"SEND OUT!!!",
 	"You are ENOUGH!",
+	"I, do NOT fail!",
 }
 
 // Server2985 is the guild id for the SD server.
-const Server2985 = "1339671620880699433"
+const (
+	Server2985 = "1339671620880699433"
+	ServerNXG  = "1423406563850190850"
+)
 
 func main() {
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var (
 		token    = fs.String("bot_token", "", "bot authentication token")
 		serverId = fs.String("server_id", Server2985, "server to listen on")
+		nxg      = fs.String("nxg_server_id", ServerNXG, "NXG server id")
 	)
 	if err := ff.Parse(fs,
 		os.Args[1:],
@@ -62,6 +67,7 @@ func main() {
 	session.AddHandler(hungry(*serverId))
 	session.AddHandler(getQuote(*serverId, quotes))
 	session.AddHandler(wakeUp(*serverId, opus))
+	session.AddHandler(Kit(*nxg))
 
 	if err := session.Open(); err != nil {
 		slog.Info("error opening websocket", "error", err)
