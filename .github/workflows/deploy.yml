@@ -74,7 +74,7 @@ jobs:
 
       # Step 2: Make the downloaded binary executable
       - name: Make binary executable
-        run: chmod +x my-app-binary
+        run: chmod +x discordbot
 
       # Step 3: Set up the SSH key
       # This step securely adds your private key to the runner's SSH agent
