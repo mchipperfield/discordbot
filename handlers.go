@@ -99,9 +99,12 @@ type CatImage struct {
 	URL string `json:"url"`
 }
 
-var kitRegex = regexp.MustCompile(`\bkit\b`)
-
 func Kit(serverId string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+	kitRegex, err := regexp.Compile(`\bkit\b`)
+	if err != nil {
+		slog.Info("failed to compile kit regex", "error", err)
+		return nil
+	}
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if m.GuildID != serverId {
 			return
