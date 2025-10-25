@@ -91,7 +91,7 @@ jobs:
       # to the VM_DEST_PATH you defined in your secrets.
       - name: Copy binary to VM via scp
         run: |
-          scp ./discordbot ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:${{ secrets.VM_DEST_PATH }}
+          scp -v ./discordbot ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:${{ secrets.VM_DEST_PATH }}
 
       # Step 5: Run commands on the VM via ssh
       # This is where you restart your application.
@@ -101,7 +101,7 @@ jobs:
       # You MUST customize the 'ssh' command below to fit your setup.
       - name: Restart application on VM
         run: |
-          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} '
+          ssh -v ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} '
           echo "Connected to VM. Restarting service..."
           
           # --- EXAMPLE COMMANDS ---
