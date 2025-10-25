@@ -48,7 +48,7 @@ jobs:
       # - "./..." builds all packages in the current directory and subdirectories
       #    (Adjust this to your main package, e.g., "./cmd/server")
       - name: Build Go Binary
-        run: GOOS=linux GOARCH=amd64 go build -v -o my-app-binary ./...
+        run: GOOS=linux GOARCH=amd64 go build -v -o discordbot ./...
 
       # Step 4: Upload the built binary as an artifact
       # This makes the "my-app-binary" file available to other jobs (like 'deploy')
@@ -56,7 +56,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: go-binary
-          path: my-app-binary
+          path: discordbot
 
   deploy:
     # Run the deploy job on the latest GitHub-hosted Ubuntu runner
@@ -91,7 +91,7 @@ jobs:
       # to the VM_DEST_PATH you defined in your secrets.
       - name: Copy binary to VM via scp
         run: |
-          scp ./my-app-binary ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:${{ secrets.VM_DEST_PATH }}
+          scp ./discordbot ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:${{ secrets.VM_DEST_PATH }}
 
       # Step 5: Run commands on the VM via ssh
       # This is where you restart your application.
@@ -109,7 +109,7 @@ jobs:
           # with the actual commands needed to restart your service.
 
           # Example 1: If you run your app as a systemd service
-          # sudo systemctl restart my-app.service
+           sudo systemctl restart goafbot.service
 
           # Example 2: If you need to find and kill the old process
           # pkill my-app-binary || true
