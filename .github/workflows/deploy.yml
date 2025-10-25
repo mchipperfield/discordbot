@@ -1,0 +1,119 @@
+# This workflow builds a Go binary and deploys it to a Linux VM on push to main.
+#
+# !! REQUIRES GITHUB SECRETS !!
+# Before this works, you MUST add the following secrets to your repository
+# (Settings > Secrets and variables > Actions):
+#
+# 1. VM_HOST: The IP address or DNS name of your Linux VM.
+#    Example: 123.45.67.89
+#
+# 2. VM_USER: The username to log in with (e.g., "ubuntu", "admin").
+#    Example: ubuntu
+#
+# 3. VM_SSH_KEY: The private SSH key (NOT the public key) that has access
+#    to your VM.
+#    Example: -----BEGIN OPENSSH PRIVATE KEY-----...
+#
+# 4. VM_DEST_PATH: The *full* destination path for the binary on your VM.
+#    Example: /home/ubuntu/my-go-app/my-binary
+#
+name: Build and Deploy Go App
+
+# Trigger the workflow on push events to the "main" branch
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    # Run the build job on the latest GitHub-hosted Ubuntu runner
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Step 1: Check out the repository code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up the Go environment (e.g., Go 1.22)
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # Step 3: Build the Go binary for Linux
+      # - "GOOS=linux" targets the Linux operating system
+      # - "GOARCH=amd64" targets 64-bit architecture (most common for VMs)
+      # - "-o my-app-binary" sets the output file name
+      # - "./..." builds all packages in the current directory and subdirectories
+      #    (Adjust this to your main package, e.g., "./cmd/server")
+      - name: Build Go Binary
+        run: GOOS=linux GOARCH=amd64 go build -v -o my-app-binary ./...
+
+      # Step 4: Upload the built binary as an artifact
+      # This makes the "my-app-binary" file available to other jobs (like 'deploy')
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-binary
+          path: my-app-binary
+
+  deploy:
+    # Run the deploy job on the latest GitHub-hosted Ubuntu runner
+    runs-on: ubuntu-latest
+    
+    # This job depends on the "build" job finishing successfully
+    needs: build
+
+    steps:
+      # Step 1: Download the binary artifact from the "build" job
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: go-binary
+
+      # Step 2: Make the downloaded binary executable
+      - name: Make binary executable
+        run: chmod +x my-app-binary
+
+      # Step 3: Set up the SSH key
+      # This step securely adds your private key to the runner's SSH agent
+      # and adds your VM's host key to known_hosts to prevent interactive prompts.
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh/
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+
+      # Step 4: Copy the binary to the VM using scp
+      # This copies the "./my-app-binary" file from the runner
+      # to the VM_DEST_PATH you defined in your secrets.
+      - name: Copy binary to VM via scp
+        run: |
+          scp ./my-app-binary ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:${{ secrets.VM_DEST_PATH }}
+
+      # Step 5: Run commands on the VM via ssh
+      # This is where you restart your application.
+      # The example below assumes you are running your app with systemd.
+      #
+      # !! IMPORTANT !!
+      # You MUST customize the 'ssh' command below to fit your setup.
+      - name: Restart application on VM
+        run: |
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} '
+          echo "Connected to VM. Restarting service..."
+          
+          # --- EXAMPLE COMMANDS ---
+          # These commands are just examples. You must replace them
+          # with the actual commands needed to restart your service.
+
+          # Example 1: If you run your app as a systemd service
+          # sudo systemctl restart my-app.service
+
+          # Example 2: If you need to find and kill the old process
+          # pkill my-app-binary || true
+          # nohup ${{ secrets.VM_DEST_PATH }} > app.log 2>&1 &
+          
+          echo "Deployment complete."
+          '
