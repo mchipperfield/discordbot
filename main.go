@@ -58,6 +58,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	kitSound, errL := loadSound("hey_listen.dca")
+	if errL != nil {
+		slog.Info("failed to load kit sound", "error", errL)
+		os.Exit(1)
+	}
 	session, err := discordgo.New("Bot " + *token)
 	if err != nil {
 		slog.Info("failed to create session", "error", err)
@@ -68,6 +73,7 @@ func main() {
 	session.AddHandler(getQuote(*serverId, quotes))
 	session.AddHandler(wakeUp(*serverId, opus))
 	session.AddHandler(Kit(*nxg))
+	session.AddHandler(listen(*nxg, kitSound))
 
 	if err := session.Open(); err != nil {
 		slog.Info("error opening websocket", "error", err)

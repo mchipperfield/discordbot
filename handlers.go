@@ -86,7 +86,7 @@ func wakeUp(serverId string, opus [][]byte) func(s *discordgo.Session, m *discor
 					}
 
 					if err := vc.Speaking(false); err != nil {
-						slog.Info("failed to start speaking", "error", err)
+						slog.Info("failed to stop speaking", "error", err)
 					}
 					vc.Disconnect()
 				}
@@ -139,6 +139,52 @@ func Kit(serverId string) func(s *discordgo.Session, m *discordgo.MessageCreate)
 					slog.Info("failed to send message", "error", err, "channel", m.ChannelID)
 				}
 				s.ChannelMessageSend(m.ChannelID, "<@"+m.Author.ID+"> Who's a nice Kitty Kat?")
+			}
+		}
+	}
+}
+
+func listen(serverId string, opus [][]byte) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+	listenRegex, err := regexp.Compile(`\blisten\b`)
+	if err != nil {
+		slog.Info("failed to compile listen regex", "error", err)
+		return nil
+	}
+	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
+
+		if m.GuildID != serverId {
+			return
+		}
+
+		if m.Author.ID == s.State.User.ID {
+			return
+		}
+
+		if listenRegex.MatchString(strings.ToLower(m.Content)) {
+			guild, err := s.State.Guild(m.GuildID)
+			if err != nil {
+				slog.Info("failed to get guild", "id", m.GuildID, "error", err)
+			}
+			for _, vs := range guild.VoiceStates {
+				if vs.UserID == m.Author.ID {
+					vc, err := s.ChannelVoiceJoin(m.GuildID, vs.ChannelID, false, false)
+					if err != nil {
+						slog.Info("failed to join voice channel", "error", err, "id", vs.ChannelID)
+					}
+
+					if err := vc.Speaking(true); err != nil {
+						slog.Info("failed to start speaking", "error", err)
+					}
+					time.Sleep(250 * time.Millisecond)
+					for _, buf := range opus {
+						vc.OpusSend <- buf
+					}
+
+					if err := vc.Speaking(false); err != nil {
+						slog.Info("failed to stop speaking", "error", err)
+					}
+					vc.Disconnect()
+				}
 			}
 		}
 	}
