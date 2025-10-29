@@ -1,15 +1,13 @@
 package main
 
 import (
-	"encoding/binary"
 	"flag"
-	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/mchipperfield/discordbot/dca"
 	"github.com/peterbourgon/ff"
 
 	"github.com/bwmarrin/discordgo"
@@ -38,6 +36,8 @@ const (
 )
 
 func main() {
+	logger := logger{slog.Default()}
+
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var (
 		token    = fs.String("bot_token", "", "bot authentication token")
@@ -48,43 +48,38 @@ func main() {
 		os.Args[1:],
 		ff.WithEnvVarNoPrefix(),
 	); err != nil {
-		slog.Info("failed to parse flags", "error", err)
+		logger.Log("failed to parse flags", "error", err)
 		os.Exit(1)
 	}
 
-	opus, err := loadSound("wake_up.dca")
+	dcaService, err := dca.NewService(logger)
 	if err != nil {
-		slog.Info("failed to load sound", "error", err)
+		logger.Info("failed to create dca service", "error", err)
 		os.Exit(1)
 	}
 
-	kitSound, errL := loadSound("hey_listen.dca")
-	if errL != nil {
-		slog.Info("failed to load kit sound", "error", errL)
-		os.Exit(1)
-	}
 	session, err := discordgo.New("Bot " + *token)
 	if err != nil {
-		slog.Info("failed to create session", "error", err)
+		logger.Info("failed to create discord session", "error", err)
 		os.Exit(1)
 	}
 
 	session.AddHandler(hungry(*serverId))
 	session.AddHandler(getQuote(*serverId, quotes))
-	session.AddHandler(wakeUp(*serverId, opus))
+	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))
 	session.AddHandler(Kit(*nxg))
-	session.AddHandler(listen(*nxg, kitSound))
+	session.AddHandler(listen(*nxg, dcaService.GetSound("hey_listen.dca")))
 
 	if err := session.Open(); err != nil {
-		slog.Info("error opening websocket", "error", err)
+		logger.Info("error opening websocket", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("websocket established")
+	logger.Info("websocket established")
 
 	defer func() {
-		slog.Info("closing websocket")
+		logger.Info("closing websocket")
 		if err := session.Close(); err != nil {
-			slog.Info("error closing websocket", "error", err)
+			logger.Info("error closing websocket", "error", err)
 		}
 	}()
 
@@ -92,50 +87,15 @@ func main() {
 	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-stopChan
 
-	slog.Info("signal received", "signal", sig)
+	logger.Info("signal received", "signal", sig)
 
 }
 
-// loadSound copy/pasta from the !airhorn example at bwmarrin/godiscord
-func loadSound(filename string) ([][]byte, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		fmt.Println("Error opening dca file :", err)
-		return nil, err
-	}
-	var buffer = make([][]byte, 0)
-	var opuslen int16
+type logger struct {
+	*slog.Logger
+}
 
-	for {
-		// Read opus frame length from dca file.
-		err = binary.Read(file, binary.LittleEndian, &opuslen)
-
-		// If this is the end of the file, just return.
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			err := file.Close()
-			if err != nil {
-				return nil, err
-			}
-			return buffer, nil
-		}
-
-		if err != nil {
-			fmt.Println("Error reading from dca file :", err)
-			return nil, err
-		}
-
-		// Read encoded pcm from dca file.
-		InBuf := make([]byte, opuslen)
-		err = binary.Read(file, binary.LittleEndian, &InBuf)
-
-		// Should not be any end of file errors
-		if err != nil {
-			fmt.Println("Error reading from dca file :", err)
-			return nil, err
-		}
-
-		// Append encoded pcm data to the buffer.
-		buffer = append(buffer, InBuf)
-	}
-
+func (l logger) Log(msg string, keyvals ...any) error {
+	l.Logger.Info(msg, keyvals...)
+	return nil
 }

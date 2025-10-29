@@ -4,6 +4,7 @@ go 1.23.3
 
 require (
 	github.com/bwmarrin/discordgo v0.28.1
+	github.com/mchipperfield/gocore v0.0.0-20250613192131-2760608b5d42
 	github.com/peterbourgon/ff v1.7.1
 )
 
