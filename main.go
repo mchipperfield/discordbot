@@ -29,6 +29,21 @@ var quotes = []string{
 	"I, do NOT fail!",
 }
 
+var commands = []*discordgo.ApplicationCommand{
+	{
+		Name:        "ask",
+		Description: "Ask the bot a question",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "question",
+				Description: "The question you want to ask",
+				Required:    true,
+			},
+		},
+	},
+}
+
 // Server2985 is the guild id for the SD server.
 const (
 	Server2985 = "1339671620880699433"
@@ -64,24 +79,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	session.AddHandler(AskGemini())
 	session.AddHandler(hungry(*serverId))
 	session.AddHandler(getQuote(*serverId, quotes))
 	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))
 	session.AddHandler(Kit(*nxg))
 	session.AddHandler(listen(*nxg, dcaService.GetSound("hey_listen.dca")))
+	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
+		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
+		for _, v := range commands {
+			_, err := session.ApplicationCommandCreate(session.State.Application.ID, "", v)
+			if err != nil {
+				logger.Info("cannot create command", "command", v.Name, "error", err)
+			}
+		}
+	})
 
 	if err := session.Open(); err != nil {
 		logger.Info("error opening websocket", "error", err)
 		os.Exit(1)
 	}
 	logger.Info("websocket established")
-
-	defer func() {
-		logger.Info("closing websocket")
-		if err := session.Close(); err != nil {
-			logger.Info("error closing websocket", "error", err)
-		}
-	}()
 
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)

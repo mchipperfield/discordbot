@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/mchipperfield/discordbot/ai"
 )
 
 func getQuote(serverId string, quotes []string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -186,6 +187,42 @@ func listen(serverId string, opus [][]byte) func(s *discordgo.Session, m *discor
 					vc.Disconnect()
 				}
 			}
+		}
+	}
+}
+
+func AskGemini() func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+
+		switch i.ApplicationCommandData().Name {
+		case "ask":
+			// Defer the response, as the AI may take time to respond
+			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+			})
+			if err != nil {
+				slog.Error("failed to defer interaction response", "error", err)
+				return
+			}
+
+			// Access options in the order provided by the user.
+			options := i.ApplicationCommandData().Options
+			question := options[0].StringValue()
+
+			response, err := ai.Ask(question)
+			if err != nil {
+				slog.Error("failed to get response from AI", "error", err)
+				response = "Sorry, I encountered an error trying to answer your question."
+			}
+
+			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: &response,
+			})
+			if err != nil {
+				slog.Error("failed to edit interaction response", "error", err)
+			}
+		default:
+			slog.Error("unknown command", "command", i.ApplicationCommandData().Name)
 		}
 	}
 }
