@@ -55,15 +55,22 @@ func main() {
 
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var (
-		token    = fs.String("bot_token", "", "bot authentication token")
-		serverId = fs.String("server_id", Server2985, "server to listen on")
-		nxg      = fs.String("nxg_server_id", ServerNXG, "NXG server id")
+		token       = fs.String("bot_token", "", "bot authentication token")
+		serverId    = fs.String("server_id", Server2985, "server to listen on")
+		nxg         = fs.String("nxg_server_id", ServerNXG, "NXG server id")
+		spellingURL = fs.String("spelling_url", "https://raw.githubusercontent.com/dwyl/english-words/master/uk-us-dict.txt", "URL to uk-us dictionary file")
 	)
 	if err := ff.Parse(fs,
 		os.Args[1:],
 		ff.WithEnvVarNoPrefix(),
 	); err != nil {
 		logger.Log("failed to parse flags", "error", err)
+		os.Exit(1)
+	}
+
+	spellings, err := LoadSpellingsFromURL(*spellingURL)
+	if err != nil {
+		logger.Info("failed to load spellings", "error", err)
 		os.Exit(1)
 	}
 
@@ -85,7 +92,7 @@ func main() {
 	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))
 	session.AddHandler(Kit(*nxg))
 	session.AddHandler(listen(*nxg, dcaService.GetSound("hey_listen.dca")))
-	session.AddHandler(americanSpellingPolice())
+	session.AddHandler(americanSpellingPolice(spellings))
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
 		for _, v := range commands {
