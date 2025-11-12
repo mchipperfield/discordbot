@@ -85,6 +85,7 @@ func main() {
 	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))
 	session.AddHandler(Kit(*nxg))
 	session.AddHandler(listen(*nxg, dcaService.GetSound("hey_listen.dca")))
+	session.AddHandler(americanSpellingPolice())
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
 		for _, v := range commands {
