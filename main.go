@@ -11,6 +11,7 @@ import (
 	"github.com/peterbourgon/ff"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/mchipperfield/discordbot/ai"
 )
 
 var quotes = []string{
@@ -55,10 +56,11 @@ func main() {
 
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var (
-		token       = fs.String("bot_token", "", "bot authentication token")
-		serverId    = fs.String("server_id", Server2985, "server to listen on")
-		nxg         = fs.String("nxg_server_id", ServerNXG, "NXG server id")
-		spellingURL = fs.String("spelling_url", "https://raw.githubusercontent.com/dwyl/english-words/master/uk-us-dict.txt", "URL to uk-us dictionary file")
+		token        = fs.String("bot_token", "", "bot authentication token")
+		serverId     = fs.String("server_id", Server2985, "server to listen on")
+		nxg          = fs.String("nxg_server_id", ServerNXG, "NXG server id")
+		spellingURL  = fs.String("spelling_url", "https://raw.githubusercontent.com/dwyl/english-words/master/uk-us-dict.txt", "URL to uk-us dictionary file")
+		geminiAPIKey = fs.String("gemini_api_key", "", "API key for Gemini AI service")
 	)
 	if err := ff.Parse(fs,
 		os.Args[1:],
@@ -71,6 +73,11 @@ func main() {
 	spellings, err := LoadSpellingsFromURL(*spellingURL)
 	if err != nil {
 		logger.Info("failed to load spellings", "error", err)
+		os.Exit(1)
+	}
+	aiService, err := ai.NewService(*geminiAPIKey)
+	if err != nil {
+		logger.Info("failed to create ai service", "error", err)
 		os.Exit(1)
 	}
 
@@ -86,7 +93,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	session.AddHandler(AskGemini())
+	session.AddHandler(AskGemini(aiService))
 	session.AddHandler(hungry(*serverId))
 	session.AddHandler(getQuote(*serverId, quotes))
 	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))

@@ -4,27 +4,34 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 
 	"github.com/google/generative-ai-go/genai"
 	"google.golang.org/api/option"
 )
 
-// Ask sends a prompt to the Gemini API and returns the response.
-func Ask(prompt string) (string, error) {
+type Service struct {
+	*genai.Client
+}
+
+func NewService(apiKey string) (*Service, error) {
 	ctx := context.Background()
-	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
-		return "", fmt.Errorf("GEMINI_API_KEY environment variable not set")
+		return nil, fmt.Errorf("no api key provided")
 	}
 
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
-		return "", fmt.Errorf("failed to create genai client: %w", err)
+		return nil, fmt.Errorf("failed to create genai client: %w", err)
 	}
-	defer client.Close()
 
-	model := client.GenerativeModel("gemini-2.0-flash")
+	return &Service{client}, nil
+}
+
+// Ask sends a prompt to the Gemini API and returns the response.
+func (s *Service) Ask(prompt string) (string, error) {
+	ctx := context.Background()
+
+	model := s.Client.GenerativeModel("gemini-2.0-flash")
 	resp, err := model.GenerateContent(ctx, genai.Text("Answer this question, keeping the response to under 1500 characters: "+prompt))
 	if err != nil {
 		return "", fmt.Errorf("failed to generate content: %w", err)

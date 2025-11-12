@@ -191,7 +191,7 @@ func listen(serverId string, opus [][]byte) func(s *discordgo.Session, m *discor
 	}
 }
 
-func AskGemini() func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func AskGemini(service *ai.Service) func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 		switch i.ApplicationCommandData().Name {
@@ -209,7 +209,7 @@ func AskGemini() func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			options := i.ApplicationCommandData().Options
 			question := options[0].StringValue()
 
-			response, err := ai.Ask(question)
+			response, err := service.Ask(question)
 			if err != nil {
 				slog.Error("failed to get response from AI", "error", err)
 				response = "Sorry, I encountered an error trying to answer your question."
