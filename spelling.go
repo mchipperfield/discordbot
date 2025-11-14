@@ -58,13 +58,8 @@ func americanSpellingPolice(americanToEnglish map[string]string) func(s *discord
 		words := strings.Fields(m.Content)
 		for _, word := range words {
 			cleanedWord := cleanWord(strings.ToLower(word))
-			for american, british := range americanToEnglish {
-				if strings.HasPrefix(cleanedWord, american) {
-					// Replace the American prefix with the British one
-					suggestedWord := strings.Replace(cleanedWord, american, british, 1)
-					suggestions = append(suggestions, fmt.Sprintf("`%s` -> `%s`", cleanedWord, suggestedWord))
-					break // Move to the next word once a match is found
-				}
+			if britishSpelling, ok := americanToEnglish[cleanedWord]; ok {
+				suggestions = append(suggestions, fmt.Sprintf("`%s` -> `%s`", cleanedWord, britishSpelling))
 			}
 		}
 

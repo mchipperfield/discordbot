@@ -59,7 +59,7 @@ func main() {
 		token        = fs.String("bot_token", "", "bot authentication token")
 		serverId     = fs.String("server_id", Server2985, "server to listen on")
 		nxg          = fs.String("nxg_server_id", ServerNXG, "NXG server id")
-		spellingURL  = fs.String("spelling_url", "https://raw.githubusercontent.com/dwyl/english-words/master/uk-us-dict.txt", "URL to uk-us dictionary file")
+		spellingURL  = fs.String("spelling_url", "https://gist.githubusercontent.com/ZekNikZ/5e7dd531df99be4408bd768ded36aad9/raw/c0ecc900022d60d54accb3770f2e737dcba738ad/british-american-words.txt", "URL to uk-us dictionary file")
 		geminiAPIKey = fs.String("gemini_api_key", "", "API key for Gemini AI service")
 	)
 	if err := ff.Parse(fs,

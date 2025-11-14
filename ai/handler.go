@@ -31,7 +31,7 @@ func NewService(apiKey string) (*Service, error) {
 func (s *Service) Ask(prompt string) (string, error) {
 	ctx := context.Background()
 
-	model := s.Client.GenerativeModel("gemini-2.0-flash")
+	model := s.Client.GenerativeModel("gemini-2.5-flash")
 	resp, err := model.GenerateContent(ctx, genai.Text("Answer this question, keeping the response to under 1500 characters: "+prompt))
 	if err != nil {
 		return "", fmt.Errorf("failed to generate content: %w", err)
