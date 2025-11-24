@@ -55,6 +55,18 @@ var commands = []*discordgo.ApplicationCommand{
 			},
 		},
 	},
+	{
+		Name:        "code",
+		Description: "Adds a new gift code for redemption.",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "code",
+				Description: "The gift code to add.",
+				Required:    true,
+			},
+		},
+	},
 }
 
 // Server2985 is the guild id for the SD server.
@@ -108,6 +120,7 @@ func main() {
 
 	session.AddHandler(AskGemini(aiService))
 	session.AddHandler(RegisterPlayer(*playerIDFile))
+	session.AddHandler(AddCode(*playerIDFile))
 	session.AddHandler(hungry(*serverId))
 	session.AddHandler(getQuote(*serverId, quotes))
 	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))
@@ -116,8 +129,23 @@ func main() {
 	session.AddHandler(americanSpellingPolice(spellings))
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
+
+		// Clean up old commands to ensure a fresh state.
+		existingCommands, err := s.ApplicationCommands(s.State.User.ID, *nxg)
+		if err != nil {
+			logger.Info("could not fetch existing commands", "error", err)
+		} else {
+			for _, v := range existingCommands {
+				err := s.ApplicationCommandDelete(s.State.User.ID, *nxg, v.ID)
+				if err != nil {
+					logger.Info("cannot delete command", "command", v.Name, "error", err)
+				}
+			}
+		}
+
+		// Register new commands.
 		for _, v := range commands {
-			_, err := session.ApplicationCommandCreate(session.State.Application.ID, "", v)
+			_, err := s.ApplicationCommandCreate(s.State.User.ID, *nxg, v)
 			if err != nil {
 				logger.Info("cannot create command", "command", v.Name, "error", err)
 			}

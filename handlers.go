@@ -10,12 +10,19 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/mchipperfield/discordbot/ai"
+)
+
+const (
+	ErrCodeClaimed  = "40008"
+	ErrCodeExpired  = "40007"
+	ErrCodeNotFound = "40014"
 )
 
 func getQuote(serverId string, quotes []string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -261,7 +268,7 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 		// Validate Player ID with KingShot API
 		loginPayload := EncodePayload(map[string]string{
 			"fid":  playerID,
-			"time": fmt.Sprintf("%d", time.Now().Unix()),
+			"time": fmt.Sprintf("%d", time.Now().Unix()+10),
 		})
 		loginResp, err := Login(loginPayload)
 		if err != nil {
@@ -346,11 +353,13 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 
 		// Redeem active codes
 		var redemptionResults []string
+		var codesToRemove []string
+
 		for _, code := range ActiveCodes {
 			redeemPayload := EncodePayload(map[string]string{
 				"fid":  playerID,
 				"cdk":  code,
-				"time": fmt.Sprintf("%d", time.Now().Unix()),
+				"time": fmt.Sprintf("%d", time.Now().Unix()+10),
 			})
 			redeemResp, err := RedeemGiftCode(redeemPayload)
 			if err != nil {
@@ -361,16 +370,26 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 
 			var resultMsg string
 			switch string(redeemResp.ErrCode) {
-			case "40008":
+			case ErrCodeClaimed:
 				resultMsg = "Code Claimed."
-			case "40007":
+			case ErrCodeExpired:
 				resultMsg = "Code Expired."
-			case "40014":
+				ExpiredCodes = append(ExpiredCodes, code)
+				codesToRemove = append(codesToRemove, code)
+			case ErrCodeNotFound:
 				resultMsg = "Code Not Found."
+				codesToRemove = append(codesToRemove, code)
 			default:
 				resultMsg = redeemResp.Message
 			}
 			redemptionResults = append(redemptionResults, fmt.Sprintf("`%s`: %s", code, resultMsg))
+		}
+
+		// Remove expired or not-found codes from ActiveCodes
+		if len(codesToRemove) > 0 {
+			ActiveCodes = slices.DeleteFunc(ActiveCodes, func(code string) bool {
+				return slices.Contains(codesToRemove, code)
+			})
 		}
 
 		if len(redemptionResults) > 0 {
@@ -383,5 +402,204 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 		if err != nil {
 			slog.Error("failed to edit interaction response for register", "error", err)
 		}
+	}
+}
+
+func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		if i.Type != discordgo.InteractionApplicationCommand || i.ApplicationCommandData().Name != "code" {
+			return
+		}
+
+		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		})
+		if err != nil {
+			slog.Error("failed to defer interaction response for code", "error", err)
+			return
+		}
+
+		// --- Permission Check ---
+		hasPermission := i.Member.Permissions&discordgo.PermissionAdministrator == discordgo.PermissionAdministrator
+
+		if !hasPermission {
+			guild, err := s.State.Guild(i.GuildID)
+			if err != nil {
+				slog.Error("failed to get guild for permission check", "error", err)
+				response := "Error checking permissions."
+				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+				return
+			}
+
+			var adminRoleID string
+			for _, role := range guild.Roles {
+				if role.Name == "R4+" {
+					adminRoleID = role.ID
+					break
+				}
+			}
+
+			if adminRoleID != "" {
+				for _, roleID := range i.Member.Roles {
+					if roleID == adminRoleID {
+						hasPermission = true
+						break
+					}
+				}
+			}
+		}
+
+		if !hasPermission {
+			response := "You do not have permission to use this command."
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+
+		// --- Command Logic ---
+		playerIDMutex.Lock()
+		defer playerIDMutex.Unlock()
+
+		newCode := i.ApplicationCommandData().Options[0].StringValue()
+
+		// Check if code already exists
+		if slices.Contains(ActiveCodes, newCode) {
+			response := fmt.Sprintf("Code `%s` is already active.", newCode)
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+		if slices.Contains(ExpiredCodes, newCode) {
+			response := fmt.Sprintf("Code `%s` has expired and cannot be re-added.", newCode)
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+
+		// Add code to active list
+		ActiveCodes = append(ActiveCodes, newCode)
+
+		// Read registered players
+		file, err := os.Open(playerIDFile)
+		if err != nil {
+			response := fmt.Sprintf("Code `%s` has been added, but failed to open player file to redeem.", newCode)
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+		defer file.Close()
+
+		reader := csv.NewReader(file)
+		csvRecords, err := reader.ReadAll()
+		if err != nil {
+			response := fmt.Sprintf("Code `%s` has been added, but failed to read player file to redeem.", newCode)
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+
+		if len(csvRecords) == 0 {
+			response := fmt.Sprintf("Code `%s` has been added to the active list, but there are no registered players to redeem it for.", newCode)
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+
+		// --- Validate code with the first player ---
+		firstPlayerID := csvRecords[0][1]
+		loginPayload := EncodePayload(map[string]string{
+			"fid":  firstPlayerID,
+			"time": fmt.Sprintf("%d", time.Now().Unix()+10),
+		})
+		_, err = Login(loginPayload)
+		if err != nil {
+			slog.Error("failed to call login endpoint before validating new code", "error", err)
+		}
+		redeemPayload := EncodePayload(map[string]string{
+			"fid":  firstPlayerID,
+			"cdk":  newCode,
+			"time": fmt.Sprintf("%d", (time.Now().Unix() + 10)),
+		})
+		redeemResp, err := RedeemGiftCode(redeemPayload)
+
+		if err != nil {
+			ActiveCodes = slices.DeleteFunc(ActiveCodes, func(c string) bool { return c == newCode })
+			response := fmt.Sprintf("Failed to validate code `%s` due to an error. The code has been removed.", newCode)
+			slog.Error("failed to validate new code", "error", err, "code", newCode)
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+
+		if redeemResp != nil {
+			errCode := string(redeemResp.ErrCode)
+			if errCode == ErrCodeNotFound || errCode == ErrCodeExpired {
+				// If the code is not found or expired on the first attempt, assume it's invalid for adding.
+				ActiveCodes = slices.DeleteFunc(ActiveCodes, func(c string) bool {
+					return c == newCode
+				})
+				var response string
+				if errCode == ErrCodeNotFound {
+					response = fmt.Sprintf("Code `%s` is not a valid gift-code.", newCode)
+				} else { // ErrCodeExpired
+					response = fmt.Sprintf("Code `%s` is expired.", newCode)
+				}
+				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+				return
+			}
+		}
+
+		// --- Redeem for all players ---
+		var redemptionResults []string
+		// Manually add result for the first player
+		var firstResultMsg string
+		switch string(redeemResp.ErrCode) {
+		case ErrCodeClaimed:
+			firstResultMsg = "Claimed!"
+		case ErrCodeExpired:
+			firstResultMsg = "Expired."
+		default:
+			firstResultMsg = redeemResp.Message
+		}
+		redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", firstPlayerID, firstResultMsg))
+		time.Sleep(100 * time.Millisecond) // Delay after first request
+
+		// Loop through the rest of the players
+		for _, record := range csvRecords[1:] {
+			if len(record) == 2 {
+				playerID := record[1]
+				loginPayload := EncodePayload(map[string]string{
+					"fid":  playerID,
+					"time": fmt.Sprintf("%d", time.Now().Unix()+10),
+				})
+				_, err := Login(loginPayload)
+				if err != nil {
+					slog.Error("failed to call login endpoint before redeeming code for player", "error", err, "playerID", playerID)
+				}
+				redeemPayload := EncodePayload(map[string]string{
+					"fid":  playerID,
+					"cdk":  newCode,
+					"time": fmt.Sprintf("%d", time.Now().Unix()+10),
+				})
+				redeemResp, err := RedeemGiftCode(redeemPayload)
+
+				var resultMsg string
+				if err != nil {
+					slog.Error("failed to redeem gift code for player", "error", err, "code", newCode, "playerID", playerID)
+					resultMsg = "Error redeeming."
+				} else {
+					switch string(redeemResp.ErrCode) {
+					case ErrCodeClaimed:
+						resultMsg = "Claimed!"
+					case ErrCodeNotFound:
+						resultMsg = "Already claimed or invalid."
+					case ErrCodeExpired:
+						resultMsg = "Expired."
+					default:
+						resultMsg = redeemResp.Message
+					}
+				}
+				redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", playerID, resultMsg))
+
+				// Small delay to avoid rate-limiting
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+
+		response := fmt.Sprintf("Code `%s` has been added to the active list.\n\n**Redemption Results for %d players:**\n%s", newCode, len(csvRecords), strings.Join(redemptionResults, "\n"))
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 	}
 }

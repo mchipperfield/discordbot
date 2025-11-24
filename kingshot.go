@@ -24,6 +24,8 @@ var ActiveCodes = []string{
 	"TRICKORTREAT",
 }
 
+var ExpiredCodes []string
+
 type LoginRequest struct {
 	Fid  string `json:"fid"`
 	Time string `json:"time"`
@@ -42,12 +44,7 @@ func EncodePayload(data map[string]string) string {
 	var encodedPairs []string
 	for _, key := range sortedKeys {
 		value := data[key]
-		var valueStr string
-
-		// Conditional Serialization: check if value is a nested dictionary (map[string]interface{})
-
-		// Otherwise, use fmt.Sprint to get the string representation
-		valueStr = fmt.Sprint(value)
+		valueStr := fmt.Sprint(value)
 
 		// Append the key=value pair
 		encodedPairs = append(encodedPairs, fmt.Sprintf("%s=%s", key, valueStr))
