@@ -1,13 +1,17 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -194,6 +198,10 @@ func listen(serverId string, opus [][]byte) func(s *discordgo.Session, m *discor
 func AskGemini(service *ai.Service) func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
+		if i.Type != discordgo.InteractionApplicationCommand {
+			return
+		}
+
 		switch i.ApplicationCommandData().Name {
 		case "ask":
 			// Defer the response, as the AI may take time to respond
@@ -222,7 +230,124 @@ func AskGemini(service *ai.Service) func(s *discordgo.Session, i *discordgo.Inte
 				slog.Error("failed to edit interaction response", "error", err)
 			}
 		default:
-			slog.Error("unknown command", "command", i.ApplicationCommandData().Name)
+			// This can be noisy if we have other interaction types.
+			// slog.Error("unknown command", "command", i.ApplicationCommandData().Name)
+		}
+	}
+}
+
+var playerIDMutex = &sync.Mutex{}
+
+func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		if i.Type != discordgo.InteractionApplicationCommand || i.ApplicationCommandData().Name != "register" {
+			return
+		}
+
+		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Flags: discordgo.MessageFlagsEphemeral,
+			},
+		})
+		if err != nil {
+			slog.Error("failed to defer interaction response for register", "error", err)
+			return
+		}
+
+		playerID := i.ApplicationCommandData().Options[0].StringValue()
+		discordID := i.Member.User.ID
+
+		// Validate Player ID with KingShot API
+		loginPayload := EncodePayload(map[string]string{
+			"fid":  playerID,
+			"time": fmt.Sprintf("%d", time.Now().Unix()),
+		})
+		loginResp, err := Login(loginPayload)
+		if err != nil {
+			slog.Error("failed to call login endpoint", "error", err)
+			response := "Error validating player ID. Please try again later."
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+
+		if loginResp.Code != 0 {
+			slog.Info("invalid player id", "player_id", playerID, "response_code", loginResp.Code, "response_message", loginResp.Message)
+			response := "Invalid player ID provided."
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+
+		playerIDMutex.Lock()
+		defer playerIDMutex.Unlock()
+
+		// Read existing records
+		records := make(map[string]string) // discordID -> playerID
+		file, err := os.OpenFile(playerIDFile, os.O_RDWR|os.O_CREATE, 0644)
+		if err != nil {
+			slog.Error("failed to open or create player id file", "error", err, "file", playerIDFile)
+			response := "Error registering player ID."
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+		defer file.Close()
+
+		reader := csv.NewReader(file)
+		csvRecords, err := reader.ReadAll()
+		if err != nil && err != io.EOF {
+			slog.Error("failed to read csv records", "error", err, "file", playerIDFile)
+			response := "Error registering player ID."
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+
+		for _, record := range csvRecords {
+			if len(record) == 2 {
+				records[record[0]] = record[1]
+			}
+		}
+
+		// Check for duplicate player ID
+		for _, pID := range records {
+			if pID == playerID {
+				response := "This player ID has already been registered."
+				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+				return
+			}
+		}
+
+		// Add or update record
+		records[discordID] = playerID
+
+		// Write all records back to the file
+		if err := file.Truncate(0); err != nil {
+			slog.Error("failed to truncate player id file", "error", err)
+		}
+		if _, err := file.Seek(0, 0); err != nil {
+			slog.Error("failed to seek in player id file", "error", err)
+		}
+
+		writer := csv.NewWriter(file)
+		for dID, pID := range records {
+			if err := writer.Write([]string{dID, pID}); err != nil {
+				slog.Error("failed to write record to csv", "error", err)
+			}
+		}
+		writer.Flush()
+
+		if err := writer.Error(); err != nil {
+			slog.Error("error writing csv file", "error", err, "file", playerIDFile)
+			response := "Error writing player ID to file."
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		}
+
+		response := "Your player ID has been registered successfully!"
+		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: &response,
+		})
+		if err != nil {
+			slog.Error("failed to edit interaction response for register", "error", err)
 		}
 	}
 }

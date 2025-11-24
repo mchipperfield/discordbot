@@ -43,6 +43,18 @@ var commands = []*discordgo.ApplicationCommand{
 			},
 		},
 	},
+	{
+		Name:        "register",
+		Description: "Register your KingShot player ID",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "player-id",
+				Description: "Your KingShot player ID",
+				Required:    true,
+			},
+		},
+	},
 }
 
 // Server2985 is the guild id for the SD server.
@@ -61,6 +73,7 @@ func main() {
 		nxg          = fs.String("nxg_server_id", ServerNXG, "NXG server id")
 		spellingURL  = fs.String("spelling_url", "https://gist.githubusercontent.com/ZekNikZ/5e7dd531df99be4408bd768ded36aad9/raw/c0ecc900022d60d54accb3770f2e737dcba738ad/british-american-words.txt", "URL to uk-us dictionary file")
 		geminiAPIKey = fs.String("gemini_api_key", "", "API key for Gemini AI service")
+		playerIDFile = fs.String("player_id_file", "player_ids.csv", "File to store player IDs")
 	)
 	if err := ff.Parse(fs,
 		os.Args[1:],
@@ -94,6 +107,7 @@ func main() {
 	}
 
 	session.AddHandler(AskGemini(aiService))
+	session.AddHandler(RegisterPlayer(*playerIDFile))
 	session.AddHandler(hungry(*serverId))
 	session.AddHandler(getQuote(*serverId, quotes))
 	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))
