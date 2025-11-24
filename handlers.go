@@ -342,7 +342,41 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 			return
 		}
 
-		response := "Your player ID has been registered successfully!"
+		response := "**Registration Successful!**\n**Your player ID *" + playerID + "* has been registered successfully!**"
+
+		// Redeem active codes
+		var redemptionResults []string
+		for _, code := range ActiveCodes {
+			redeemPayload := EncodePayload(map[string]string{
+				"fid":  playerID,
+				"cdk":  code,
+				"time": fmt.Sprintf("%d", time.Now().Unix()),
+			})
+			redeemResp, err := RedeemGiftCode(redeemPayload)
+			if err != nil {
+				slog.Error("failed to redeem gift code", "error", err, "code", code)
+				redemptionResults = append(redemptionResults, fmt.Sprintf("`%s`: Error redeeming.", code))
+				continue
+			}
+
+			var resultMsg string
+			switch string(redeemResp.ErrCode) {
+			case "40008":
+				resultMsg = "Code Claimed."
+			case "40007":
+				resultMsg = "Code Expired."
+			case "40014":
+				resultMsg = "Code Not Found."
+			default:
+				resultMsg = redeemResp.Message
+			}
+			redemptionResults = append(redemptionResults, fmt.Sprintf("`%s`: %s", code, resultMsg))
+		}
+
+		if len(redemptionResults) > 0 {
+			response += "\n\n**Gift Code Redemption Results:**\n" + strings.Join(redemptionResults, "\n")
+		}
+
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: &response,
 		})

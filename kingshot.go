@@ -14,9 +14,15 @@ import (
 const (
 	LoginUrl  string = "https://kingshot-giftcode.centurygame.com/api/player"
 	RedeemUrl string = "https://kingshot-giftcode.centurygame.com/api/gift_code"
-	PlayerId  string = "115308769"
 	Key       string = "mN4!pQs6JrYwV9"
 )
+
+var ActiveCodes = []string{
+	"JackKaoAndKS",
+	"VIP777",
+	"invalidcode123",
+	"TRICKORTREAT",
+}
 
 type LoginRequest struct {
 	Fid  string `json:"fid"`
@@ -121,8 +127,9 @@ func Login(payload string) (*LoginResponse, error) {
 }
 
 type RedeemResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"msg"`
+	Code    int     `json:"code"`
+	Message string  `json:"msg"`
+	ErrCode ErrCode `json:"err_code"`
 }
 
 func RedeemGiftCode(payload string) (*RedeemResponse, error) {
@@ -131,9 +138,11 @@ func RedeemGiftCode(payload string) (*RedeemResponse, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	var redeemResponse RedeemResponse
 	if err := json.NewDecoder(resp.Body).Decode(&redeemResponse); err != nil {
 		return nil, err
 	}
+
 	return &redeemResponse, nil
 }
