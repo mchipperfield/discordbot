@@ -266,11 +266,8 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 		discordID := i.Member.User.ID
 
 		// Validate Player ID with KingShot API
-		loginPayload := EncodePayload(map[string]string{
-			"fid":  playerID,
-			"time": fmt.Sprintf("%d", time.Now().Unix()+10),
-		})
-		loginResp, err := Login(loginPayload)
+		// This calls the api to ensure the player ID exists and can be logged in, before registering it.
+		loginResp, err := Login(playerID)
 		if err != nil {
 			slog.Error("failed to call login endpoint", "error", err)
 			response := "Error validating player ID. Please try again later."
@@ -348,26 +345,24 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 			return
 		}
+		slog.Info("user subscribed to bot", "player_id", playerID, "discord_id", discordID)
 
 		response := "**Registration Successful!**\n**Your player ID *" + playerID + "* has been registered successfully!**"
 
-		// Redeem active codes
+		// After successful registration to the service, we will redeem any active codes for the user.
+		// They may have previously, activated codes before registering. But this ensure they are upto date.
+
 		var redemptionResults []string
 		var codesToRemove []string
 
 		for _, code := range ActiveCodes {
-			redeemPayload := EncodePayload(map[string]string{
-				"fid":  playerID,
-				"cdk":  code,
-				"time": fmt.Sprintf("%d", time.Now().Unix()+10),
-			})
-			redeemResp, err := RedeemGiftCode(redeemPayload)
+			redeemResp, err := RedeemGiftCode(playerID, code)
 			if err != nil {
 				slog.Error("failed to redeem gift code", "error", err, "code", code)
 				redemptionResults = append(redemptionResults, fmt.Sprintf("`%s`: Error redeeming.", code))
 				continue
 			}
-
+			slog.Info("redeem response", "code", code, "err_code", redeemResp.ErrCode, "message", redeemResp.Message)
 			var resultMsg string
 			switch string(redeemResp.ErrCode) {
 			case ErrCodeClaimed:
@@ -501,21 +496,13 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 
 		// --- Validate code with the first player ---
 		firstPlayerID := csvRecords[0][1]
-		loginPayload := EncodePayload(map[string]string{
-			"fid":  firstPlayerID,
-			"time": fmt.Sprintf("%d", time.Now().Unix()+10),
-		})
-		_, err = Login(loginPayload)
+
+		_, err = Login(firstPlayerID)
 		if err != nil {
 			slog.Error("failed to call login endpoint before validating new code", "error", err)
 		}
-		redeemPayload := EncodePayload(map[string]string{
-			"fid":  firstPlayerID,
-			"cdk":  newCode,
-			"time": fmt.Sprintf("%d", (time.Now().Unix() + 10)),
-		})
-		redeemResp, err := RedeemGiftCode(redeemPayload)
 
+		redeemResp, err := RedeemGiftCode(firstPlayerID, newCode)
 		if err != nil {
 			ActiveCodes = slices.DeleteFunc(ActiveCodes, func(c string) bool { return c == newCode })
 			response := fmt.Sprintf("Failed to validate code `%s` due to an error. The code has been removed.", newCode)
@@ -561,20 +548,13 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 		for _, record := range csvRecords[1:] {
 			if len(record) == 2 {
 				playerID := record[1]
-				loginPayload := EncodePayload(map[string]string{
-					"fid":  playerID,
-					"time": fmt.Sprintf("%d", time.Now().Unix()+10),
-				})
-				_, err := Login(loginPayload)
+
+				_, err := Login(playerID)
 				if err != nil {
 					slog.Error("failed to call login endpoint before redeeming code for player", "error", err, "playerID", playerID)
 				}
-				redeemPayload := EncodePayload(map[string]string{
-					"fid":  playerID,
-					"cdk":  newCode,
-					"time": fmt.Sprintf("%d", time.Now().Unix()+10),
-				})
-				redeemResp, err := RedeemGiftCode(redeemPayload)
+
+				redeemResp, err := RedeemGiftCode(playerID, newCode)
 
 				var resultMsg string
 				if err != nil {

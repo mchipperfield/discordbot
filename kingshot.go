@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -20,42 +21,23 @@ const (
 var ActiveCodes = []string{
 	"JackKaoAndKS",
 	"VIP777",
-	"invalidcode123",
-	"TRICKORTREAT",
 }
 
 var ExpiredCodes []string
 
-type LoginRequest struct {
-	Fid  string `json:"fid"`
-	Time string `json:"time"`
-	Sign string `json:"sign"`
-}
-
-func EncodePayload(data map[string]string) string {
-
-	var sortedKeys []string
-	for key := range data {
-		sortedKeys = append(sortedKeys, key)
-	}
-	sort.Strings(sortedKeys)
+// EncodePayload encodes the data map into a JSON string with an MD5 signature
+// This is the required format for the KingShot API.
+func EncodePayload(data map[string]string) (string, error) {
+	values := url.Values{}
 
 	// 2. Data Encoding/Serialization (The Python equivalent of f"{key}={...}")
-	var encodedPairs []string
-	for _, key := range sortedKeys {
-		value := data[key]
-		valueStr := fmt.Sprint(value)
-
-		// Append the key=value pair
-		encodedPairs = append(encodedPairs, fmt.Sprintf("%s=%s", key, valueStr))
+	for key, value := range data {
+		values.Set(key, value)
 	}
 
-	// Join the pairs with '&'
-	encodedData := strings.Join(encodedPairs, "&")
-
-	// 3. Signature Generation (MD5 Hashing)
+	// Signature Generation (MD5 Hashing)
 	// Combine encoded data and secret: "{encoded_data}{secret}"
-	dataToHash := encodedData + Key
+	dataToHash := values.Encode() + Key
 
 	// Calculate MD5 hash
 	hasher := md5.New()
@@ -64,19 +46,14 @@ func EncodePayload(data map[string]string) string {
 	// Convert the hash bytes to a hex string
 	signature := hex.EncodeToString(hasher.Sum(nil))
 
-	// 4. Return the new map with the signature
-	// Create a new map and copy all original data, then add the 'sign' field
-	signedData := make(map[string]interface{})
-	for k, v := range data {
-		signedData[k] = v
-	}
-	signedData["sign"] = signature
+	// Return the original data, with signature
+	data["sign"] = signature
 
-	payload, err := json.Marshal(signedData)
+	payload, err := json.Marshal(data)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
-	return string(payload)
+	return string(payload), nil
 }
 
 // ErrCode is a custom type to handle err_code being a number or a string.
@@ -110,12 +87,23 @@ type LoginResponse struct {
 	ErrCode ErrCode `json:"err_code"`
 }
 
-func Login(payload string) (*LoginResponse, error) {
+func Login(fid string) (*LoginResponse, error) {
+	data := map[string]string{
+		"fid":  fid,
+		"time": fmt.Sprintf("%d", time.Now().Unix()+10),
+	}
+
+	payload, err := EncodePayload(data)
+	if err != nil {
+		return nil, err
+	}
+
 	resp, err := http.Post(LoginUrl, "application/json", strings.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	var loginResp LoginResponse
 	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
 		return nil, err
@@ -129,7 +117,18 @@ type RedeemResponse struct {
 	ErrCode ErrCode `json:"err_code"`
 }
 
-func RedeemGiftCode(payload string) (*RedeemResponse, error) {
+func RedeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
+	data := map[string]string{
+		"fid":  fid,
+		"cdk":  cdk,
+		"time": fmt.Sprintf("%d", time.Now().Unix()+10),
+	}
+
+	payload, err := EncodePayload(data)
+	if err != nil {
+		return nil, err
+	}
+
 	resp, err := http.Post(RedeemUrl, "application/json", strings.NewReader(payload))
 	if err != nil {
 		return nil, err
