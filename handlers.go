@@ -366,7 +366,7 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 			var resultMsg string
 			switch string(redeemResp.ErrCode) {
 			case ErrCodeClaimed:
-				resultMsg = "Code Claimed."
+				resultMsg = "Code Claimed!"
 			case ErrCodeExpired:
 				resultMsg = "Code Expired."
 				ExpiredCodes = append(ExpiredCodes, code)
@@ -468,9 +468,6 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 			return
 		}
 
-		// Add code to active list
-		ActiveCodes = append(ActiveCodes, newCode)
-
 		// Read registered players
 		file, err := os.Open(playerIDFile)
 		if err != nil {
@@ -504,43 +501,38 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 
 		redeemResp, err := RedeemGiftCode(firstPlayerID, newCode)
 		if err != nil {
-			ActiveCodes = slices.DeleteFunc(ActiveCodes, func(c string) bool { return c == newCode })
 			response := fmt.Sprintf("Failed to validate code `%s` due to an error. The code has been removed.", newCode)
 			slog.Error("failed to validate new code", "error", err, "code", newCode)
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 			return
 		}
 
-		if redeemResp != nil {
-			errCode := string(redeemResp.ErrCode)
-			if errCode == ErrCodeNotFound || errCode == ErrCodeExpired {
-				// If the code is not found or expired on the first attempt, assume it's invalid for adding.
-				ActiveCodes = slices.DeleteFunc(ActiveCodes, func(c string) bool {
-					return c == newCode
-				})
-				var response string
-				if errCode == ErrCodeNotFound {
-					response = fmt.Sprintf("Code `%s` is not a valid gift-code.", newCode)
-				} else { // ErrCodeExpired
-					response = fmt.Sprintf("Code `%s` is expired.", newCode)
-				}
-				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
-				return
-			}
-		}
-
-		// --- Redeem for all players ---
-		var redemptionResults []string
-		// Manually add result for the first player
+		// Test redemptrion result for first player.  If valid, proceed to redeem for all players.
 		var firstResultMsg string
 		switch string(redeemResp.ErrCode) {
 		case ErrCodeClaimed:
-			firstResultMsg = "Claimed!"
+			firstResultMsg = "Code Claimed!"
+			return
 		case ErrCodeExpired:
 			firstResultMsg = "Expired."
+			ExpiredCodes = append(ExpiredCodes, newCode)
+			response := fmt.Sprintf("Code `%s` is expired.", newCode)
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
+		case ErrCodeNotFound:
+			response := fmt.Sprintf("Code `%s` is not a valid gift-code.", newCode)
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
 		default:
 			firstResultMsg = redeemResp.Message
 		}
+
+		// Add code to active list if noit expired or invalid
+		ActiveCodes = append(ActiveCodes, newCode)
+		slog.Info("code added", "code", newCode)
+
+		// --- Redeem for all players ---
+		var redemptionResults []string
 		redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", firstPlayerID, firstResultMsg))
 		time.Sleep(100 * time.Millisecond) // Delay after first request
 
@@ -563,15 +555,16 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 				} else {
 					switch string(redeemResp.ErrCode) {
 					case ErrCodeClaimed:
-						resultMsg = "Claimed!"
-					case ErrCodeNotFound:
-						resultMsg = "Already claimed or invalid."
+						resultMsg = "Code Claimed!"
 					case ErrCodeExpired:
-						resultMsg = "Expired."
+						resultMsg = "Code Expired."
+					case ErrCodeNotFound:
+						resultMsg = "Code not found."
 					default:
 						resultMsg = redeemResp.Message
 					}
 				}
+
 				redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", playerID, resultMsg))
 
 				// Small delay to avoid rate-limiting
