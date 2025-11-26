@@ -471,7 +471,7 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 		// Read registered players
 		file, err := os.Open(playerIDFile)
 		if err != nil {
-			response := fmt.Sprintf("Code `%s` has been added, but failed to open player file to redeem.", newCode)
+			response := fmt.Sprintf("Code `%s` has not been added, but we failed to open player file to redeem.", newCode)
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 			return
 		}
@@ -480,13 +480,13 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 		reader := csv.NewReader(file)
 		csvRecords, err := reader.ReadAll()
 		if err != nil {
-			response := fmt.Sprintf("Code `%s` has been added, but failed to read player file to redeem.", newCode)
+			response := fmt.Sprintf("Code `%s` has not been added, as we failed to read player file to redeem.", newCode)
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 			return
 		}
 
 		if len(csvRecords) == 0 {
-			response := fmt.Sprintf("Code `%s` has been added to the active list, but there are no registered players to redeem it for.", newCode)
+			response := fmt.Sprintf("There are no registered players to redeem code %s.", newCode)
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 			return
 		}

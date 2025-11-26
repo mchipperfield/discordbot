@@ -136,7 +136,7 @@ func main() {
 			logger.Info("could not fetch existing commands", "error", err)
 		} else {
 			for _, v := range existingCommands {
-				err := s.ApplicationCommandDelete(s.State.User.ID, *nxg, v.ID)
+				err := s.ApplicationCommandDelete(s.State.User.ID, "", v.ID)
 				if err != nil {
 					logger.Info("cannot delete command", "command", v.Name, "error", err)
 				}
@@ -145,7 +145,7 @@ func main() {
 
 		// Register new commands.
 		for _, v := range commands {
-			_, err := s.ApplicationCommandCreate(s.State.User.ID, *nxg, v)
+			_, err := s.ApplicationCommandCreate(s.State.User.ID, "", v)
 			if err != nil {
 				logger.Info("cannot create command", "command", v.Name, "error", err)
 			}
