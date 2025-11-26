@@ -471,7 +471,7 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 		// Read registered players
 		file, err := os.Open(playerIDFile)
 		if err != nil {
-			response := fmt.Sprintf("Code `%s` has not been added, but we failed to open player file to redeem.", newCode)
+			response := fmt.Sprintf("Code `%s` has not been added, as we failed to open player file.", newCode)
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 			return
 		}
