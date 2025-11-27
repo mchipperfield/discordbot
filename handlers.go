@@ -286,7 +286,9 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 		defer playerIDMutex.Unlock()
 
 		// Read existing records
-		records := make(map[string]string) // discordID -> playerID
+		// playerToDiscord: playerID -> discordID
+		playerToDiscord := make(map[string]string)
+
 		file, err := os.OpenFile(playerIDFile, os.O_RDWR|os.O_CREATE, 0644)
 		if err != nil {
 			slog.Error("failed to open or create player id file", "error", err, "file", playerIDFile)
@@ -307,23 +309,27 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 
 		for _, record := range csvRecords {
 			if len(record) == 2 {
-				records[record[0]] = record[1]
+				pID, dID := record[0], record[1]
+				playerToDiscord[pID] = dID
 			}
 		}
 
-		// Check for duplicate player ID
-		for _, pID := range records {
-			if pID == playerID {
-				response := "This player ID has already been registered."
+		// Check if player ID is already registered.
+		if existingDiscordID, ok := playerToDiscord[playerID]; ok {
+			if existingDiscordID == discordID {
+				response := "You have already registered this player ID."
 				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 				return
 			}
+			response := "This player ID has already been registered by another user."
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+			return
 		}
 
-		// Add or update record
-		records[discordID] = playerID
+		// Add the new player ID.
+		playerToDiscord[playerID] = discordID
 
-		// Write all records back to the file
+		// Rewrite the entire file with updated records.
 		if err := file.Truncate(0); err != nil {
 			slog.Error("failed to truncate player id file", "error", err)
 		}
@@ -332,19 +338,19 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 		}
 
 		writer := csv.NewWriter(file)
-		for dID, pID := range records {
-			if err := writer.Write([]string{dID, pID}); err != nil {
+		for pID, dID := range playerToDiscord {
+			if err := writer.Write([]string{pID, dID}); err != nil {
 				slog.Error("failed to write record to csv", "error", err)
 			}
 		}
 		writer.Flush()
-
 		if err := writer.Error(); err != nil {
 			slog.Error("error writing csv file", "error", err, "file", playerIDFile)
 			response := "Error writing player ID to file."
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 			return
 		}
+
 		slog.Info("user subscribed to bot", "player_id", playerID, "discord_id", discordID)
 
 		response := "**Registration Successful!**\n**Your player ID *" + playerID + "* has been registered successfully!**"
@@ -492,7 +498,7 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 		}
 
 		// --- Validate code with the first player ---
-		firstPlayerID := csvRecords[0][1]
+		firstPlayerID := csvRecords[0][0]
 
 		_, err = Login(firstPlayerID)
 		if err != nil {
@@ -512,7 +518,6 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 		switch string(redeemResp.ErrCode) {
 		case ErrCodeClaimed:
 			firstResultMsg = "Code Claimed!"
-			return
 		case ErrCodeExpired:
 			firstResultMsg = "Expired."
 			ExpiredCodes = append(ExpiredCodes, newCode)
@@ -539,7 +544,7 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 		// Loop through the rest of the players
 		for _, record := range csvRecords[1:] {
 			if len(record) == 2 {
-				playerID := record[1]
+				playerID := record[0]
 
 				_, err := Login(playerID)
 				if err != nil {
