@@ -20,6 +20,7 @@ import (
 )
 
 const (
+	ErrCodeSuccess  = "20000"
 	ErrCodeClaimed  = "40008"
 	ErrCodeExpired  = "40007"
 	ErrCodeNotFound = "40014"
@@ -253,9 +254,6 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 
 		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Flags: discordgo.MessageFlagsEphemeral,
-			},
 		})
 		if err != nil {
 			slog.Error("failed to defer interaction response for register", "error", err)
@@ -371,8 +369,10 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 			slog.Info("redeem response", "code", code, "err_code", redeemResp.ErrCode, "message", redeemResp.Message)
 			var resultMsg string
 			switch string(redeemResp.ErrCode) {
+			case ErrCodeSuccess:
+				resultMsg = "Code Successfully Redeemed"
 			case ErrCodeClaimed:
-				resultMsg = "Code Claimed!"
+				resultMsg = "Code Already Claimed"
 			case ErrCodeExpired:
 				resultMsg = "Code Expired."
 				ExpiredCodes = append(ExpiredCodes, code)
@@ -516,8 +516,10 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 		// Test redemptrion result for first player.  If valid, proceed to redeem for all players.
 		var firstResultMsg string
 		switch string(redeemResp.ErrCode) {
+		case ErrCodeSuccess:
+			firstResultMsg = "Code Successfully Redeemed"
 		case ErrCodeClaimed:
-			firstResultMsg = "Code Claimed!"
+			firstResultMsg = "Code Already Claimed"
 		case ErrCodeExpired:
 			firstResultMsg = "Expired."
 			ExpiredCodes = append(ExpiredCodes, newCode)
@@ -559,8 +561,10 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 					resultMsg = "Error redeeming."
 				} else {
 					switch string(redeemResp.ErrCode) {
+					case ErrCodeSuccess:
+						resultMsg = "Code Successfully Redeemed"
 					case ErrCodeClaimed:
-						resultMsg = "Code Claimed!"
+						resultMsg = "Code Already Claimed"
 					case ErrCodeExpired:
 						resultMsg = "Code Expired."
 					case ErrCodeNotFound:
