@@ -544,9 +544,12 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 		redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", firstPlayerID, firstResultMsg))
 		time.Sleep(100 * time.Millisecond) // Delay after first request
 
+		var wg sync.WaitGroup
+		wg.Add(len(csvRecords) - 1)
 		// Loop through the rest of the players
 		for _, record := range csvRecords[1:] {
-			if len(record) == 2 {
+			go func() {
+				defer wg.Done()
 				playerID := record[0]
 
 				_, err := Login(playerID)
@@ -578,11 +581,10 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 
 				redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", playerID, resultMsg))
 
-				// Small delay to avoid rate-limiting
-				time.Sleep(100 * time.Millisecond)
-			}
-		}
+			}()
 
+		}
+		wg.Wait()
 		response := fmt.Sprintf("Code `%s` has been added to the active list.\n\n**Redemption Results for %d players:**\n%s", newCode, len(csvRecords), strings.Join(redemptionResults, "\n"))
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 	}
