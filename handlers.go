@@ -366,7 +366,7 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 				redemptionResults = append(redemptionResults, fmt.Sprintf("`%s`: Error redeeming.", code))
 				continue
 			}
-			slog.Info("redeem response", "code", code, "err_code", redeemResp.ErrCode, "message", redeemResp.Message)
+			slog.Info("redeem response", "code", code, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
 			var resultMsg string
 			switch string(redeemResp.ErrCode) {
 			case ErrCodeSuccess:
@@ -381,7 +381,7 @@ func RegisterPlayer(playerIDFile string) func(s *discordgo.Session, i *discordgo
 				resultMsg = "Code Not Found."
 				codesToRemove = append(codesToRemove, code)
 			default:
-				resultMsg = redeemResp.Message
+				resultMsg = "Failed to redeem code."
 			}
 			redemptionResults = append(redemptionResults, fmt.Sprintf("`%s`: %s", code, resultMsg))
 		}
@@ -515,6 +515,7 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 
 		// Test redemptrion result for first player.  If valid, proceed to redeem for all players.
 		var firstResultMsg string
+		slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", firstPlayerID)
 		switch string(redeemResp.ErrCode) {
 		case ErrCodeSuccess:
 			firstResultMsg = "Code Successfully Redeemed"
@@ -531,7 +532,7 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 			return
 		default:
-			firstResultMsg = redeemResp.Message
+			firstResultMsg = "Failed to redeem code."
 		}
 
 		// Add code to active list if noit expired or invalid
@@ -558,8 +559,9 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 				var resultMsg string
 				if err != nil {
 					slog.Error("failed to redeem gift code for player", "error", err, "code", newCode, "playerID", playerID)
-					resultMsg = "Error redeeming."
+					resultMsg = "Failed to redeem code."
 				} else {
+					slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
 					switch string(redeemResp.ErrCode) {
 					case ErrCodeSuccess:
 						resultMsg = "Code Successfully Redeemed"
@@ -570,7 +572,7 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 					case ErrCodeNotFound:
 						resultMsg = "Code not found."
 					default:
-						resultMsg = redeemResp.Message
+						resultMsg = "Failed to redeem code."
 					}
 				}
 
