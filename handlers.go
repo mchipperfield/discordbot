@@ -544,47 +544,68 @@ func AddCode(playerIDFile string) func(s *discordgo.Session, i *discordgo.Intera
 		redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", firstPlayerID, firstResultMsg))
 		time.Sleep(100 * time.Millisecond) // Delay after first request
 
+		// --- Worker Pool Setup ---
+		const numWorkers = 5
+		jobs := make(chan []string, len(csvRecords)-1)
+		results := make(chan string, len(csvRecords)-1)
+
 		var wg sync.WaitGroup
-		wg.Add(len(csvRecords) - 1)
-		// Loop through the rest of the players
-		for _, record := range csvRecords[1:] {
+		for w := 1; w <= numWorkers; w++ {
+			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				playerID := record[0]
+				for record := range jobs {
+					playerID := record[0]
 
-				_, err := Login(playerID)
-				if err != nil {
-					slog.Error("failed to call login endpoint before redeeming code for player", "error", err, "playerID", playerID)
-				}
-
-				redeemResp, err := RedeemGiftCode(playerID, newCode)
-
-				var resultMsg string
-				if err != nil {
-					slog.Error("failed to redeem gift code for player", "error", err, "code", newCode, "playerID", playerID)
-					resultMsg = "Failed to redeem code."
-				} else {
-					slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
-					switch string(redeemResp.ErrCode) {
-					case ErrCodeSuccess:
-						resultMsg = "Code Successfully Redeemed"
-					case ErrCodeClaimed:
-						resultMsg = "Code Already Claimed"
-					case ErrCodeExpired:
-						resultMsg = "Code Expired."
-					case ErrCodeNotFound:
-						resultMsg = "Code not found."
-					default:
-						resultMsg = "Failed to redeem code."
+					_, err := Login(playerID)
+					if err != nil {
+						slog.Error("failed to call login endpoint before redeeming code for player", "error", err, "playerID", playerID)
 					}
+
+					// Add a small random delay between requests per worker to be safer
+					time.Sleep(time.Duration(100+rand.IntN(150)) * time.Millisecond)
+
+					redeemResp, err := RedeemGiftCode(playerID, newCode)
+
+					var resultMsg string
+					if err != nil {
+						slog.Error("failed to redeem gift code for player", "error", err, "code", newCode, "playerID", playerID)
+						resultMsg = "Failed to redeem code."
+					} else {
+						slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
+						switch string(redeemResp.ErrCode) {
+						case ErrCodeSuccess:
+							resultMsg = "Code Successfully Redeemed"
+						case ErrCodeClaimed:
+							resultMsg = "Code Already Claimed"
+						case ErrCodeExpired:
+							resultMsg = "Code Expired."
+						case ErrCodeNotFound:
+							resultMsg = "Code not found."
+						default:
+							resultMsg = "Failed to redeem code."
+						}
+					}
+					results <- fmt.Sprintf("Player `%s`: %s", playerID, resultMsg)
 				}
-
-				redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", playerID, resultMsg))
-
 			}()
-
 		}
+
+		// Load up the jobs channel
+		for _, record := range csvRecords[1:] {
+			jobs <- record
+		}
+		close(jobs)
+
+		// Wait for all workers to finish
 		wg.Wait()
+		close(results)
+
+		// Collect results
+		for result := range results {
+			redemptionResults = append(redemptionResults, result)
+		}
+
 		response := fmt.Sprintf("Code `%s` has been added to the active list.\n\n**Redemption Results for %d players:**\n%s", newCode, len(csvRecords), strings.Join(redemptionResults, "\n"))
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 	}
