@@ -43,30 +43,6 @@ var commands = []*discordgo.ApplicationCommand{
 			},
 		},
 	},
-	{
-		Name:        "register",
-		Description: "Register your KingShot player ID",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "player-id",
-				Description: "Your KingShot player ID",
-				Required:    true,
-			},
-		},
-	},
-	{
-		Name:        "code",
-		Description: "Adds a new gift code for redemption.",
-		Options: []*discordgo.ApplicationCommandOption{
-			{
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "code",
-				Description: "The gift code to add.",
-				Required:    true,
-			},
-		},
-	},
 }
 
 // Server2985 is the guild id for the SD server.
@@ -80,12 +56,13 @@ func main() {
 
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var (
-		token        = fs.String("bot_token", "", "bot authentication token")
-		serverId     = fs.String("server_id", Server2985, "server to listen on")
-		nxg          = fs.String("nxg_server_id", ServerNXG, "NXG server id")
-		spellingURL  = fs.String("spelling_url", "https://gist.githubusercontent.com/ZekNikZ/5e7dd531df99be4408bd768ded36aad9/raw/c0ecc900022d60d54accb3770f2e737dcba738ad/british-american-words.txt", "URL to uk-us dictionary file")
-		geminiAPIKey = fs.String("gemini_api_key", "", "API key for Gemini AI service")
-		playerIDFile = fs.String("player_id_file", "player_ids.csv", "File to store player IDs")
+		token             = fs.String("bot_token", "", "bot authentication token")
+		serverId          = fs.String("server_id", Server2985, "server to listen on")
+		nxg               = fs.String("nxg_server_id", ServerNXG, "NXG server id")
+		spellingURL       = fs.String("spelling_url", "https://gist.githubusercontent.com/ZekNikZ/5e7dd531df99be4408bd768ded36aad9/raw/c0ecc900022d60d54accb3770f2e737dcba738ad/british-american-words.txt", "URL to uk-us dictionary file")
+		geminiAPIKey      = fs.String("gemini_api_key", "", "API key for Gemini AI service")
+		playerIDFile      = fs.String("player_id_file", "player_ids.csv", "File to store player IDs")
+		giftCodeChannelID = fs.String("gift_code_channel_id", "1428776775621673001", "Channel ID to listen for gift codes in")
 	)
 	if err := ff.Parse(fs,
 		os.Args[1:],
@@ -119,14 +96,13 @@ func main() {
 	}
 
 	session.AddHandler(AskGemini(aiService))
-	session.AddHandler(RegisterPlayer(*playerIDFile))
-	session.AddHandler(AddCode(*playerIDFile))
 	session.AddHandler(hungry(*serverId))
 	session.AddHandler(getQuote(*serverId, quotes))
 	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))
 	session.AddHandler(Kit(*nxg))
 	session.AddHandler(listen(*nxg, dcaService.GetSound("hey_listen.dca")))
 	session.AddHandler(americanSpellingPolice(spellings))
+	session.AddHandler(GiftCodeCommandHandler(*playerIDFile, *giftCodeChannelID))
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
 
