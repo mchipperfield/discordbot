@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -36,14 +37,29 @@ const (
 )
 const r4RoleId = "1432032487021875373" // RoleId for permission check
 
-var ActiveCodes = []string{
-	"JackKaoAndKS",
-	"VIP777",
-}
+var ActiveCodes = []string{}
 
 var ExpiredCodes []string
 
 var playerIDMutex = &sync.Mutex{}
+
+type transport struct {
+	limiter *rate.Limiter
+}
+
+func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	err := t.limiter.Wait(req.Context())
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+var httpClient = http.Client{
+	Transport: &transport{
+		limiter: rate.NewLimiter(rate.Every(200*time.Millisecond), 1),
+	},
+}
 
 func GiftCodeCommandHandler(playerIDFile, giftCodeChannelID string) func(s *discordgo.Session, r *discordgo.Ready) {
 	return func(s *discordgo.Session, r *discordgo.Ready) {
@@ -270,8 +286,37 @@ func addCode(s *discordgo.Session, i *discordgo.InteractionCreate, playerIDFile 
 
 	// --- Command Logic ---
 	newCode := i.ApplicationCommandData().Options[0].StringValue()
+
 	response := processNewCode(playerIDFile, newCode)
-	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+	if len(response) > 1900 {
+		// Split the response into chunks
+		var chunks []string
+		for len(response) > 0 {
+			runeLimit := 1900
+			if len(response) < runeLimit {
+				runeLimit = len(response)
+			}
+			// Ensure we don't split in the middle of a line
+			lastNewline := strings.LastIndex(response[:runeLimit], "\n")
+			if lastNewline == -1 {
+				lastNewline = runeLimit
+			}
+			chunks = append(chunks, response[:lastNewline])
+			response = response[lastNewline:]
+			if len(response) > 0 && response[0] == '\n' {
+				response = response[1:]
+			}
+		}
+		for _, chunk := range chunks {
+			s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+				Content: chunk,
+			})
+		}
+	} else {
+		s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: response,
+		})
+	}
 }
 
 func messageHandler(playerIDFile, channelID string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -357,6 +402,7 @@ func processNewCode(playerIDFile, newCode string) string {
 	_, err = Login(firstPlayerID)
 	if err != nil {
 		slog.Error("failed to call login endpoint before validating new code", "error", err)
+		return fmt.Sprintf("Failed to validate code `%s` due to an error. The code has not been added.", newCode)
 	}
 
 	redeemResp, err := RedeemGiftCode(firstPlayerID, newCode)
@@ -407,20 +453,25 @@ func processNewCode(playerIDFile, newCode string) string {
 
 				// Small delay to avoid rate limiting
 				time.Sleep(100 * time.Millisecond)
-
-				redeemResp, err := RedeemGiftCode(playerID, newCode)
+				_, err = Login(playerID)
 				if err != nil {
-					slog.Error("failed to redeem gift code in worker", "error", err, "code", newCode, "player_id", playerID)
-					resultMsg = "Error redeeming code."
+					slog.Error("failed to call login endpoint before validating new code", "error", err)
+					resultMsg = "Failed to login."
 				} else {
-					slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
-					switch string(redeemResp.ErrCode) {
-					case ErrCodeSuccess:
-						resultMsg = "Successfully redeemed!"
-					case ErrCodeClaimed:
-						resultMsg = "Already claimed."
-					default:
-						resultMsg = "Failed to redeem."
+					redeemResp, err := RedeemGiftCode(playerID, newCode)
+					if err != nil {
+						slog.Error("failed to redeem gift code in worker", "error", err, "code", newCode, "player_id", playerID)
+						resultMsg = "Error redeeming code."
+					} else {
+						slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
+						switch string(redeemResp.ErrCode) {
+						case ErrCodeSuccess:
+							resultMsg = "Successfully redeemed!"
+						case ErrCodeClaimed:
+							resultMsg = "Already claimed."
+						default:
+							resultMsg = "Failed to redeem."
+						}
 					}
 				}
 				results <- fmt.Sprintf("Player `%s`: %s", playerID, resultMsg)
@@ -519,7 +570,7 @@ func Login(fid string) (*LoginResponse, error) {
 		return nil, err
 	}
 
-	resp, err := http.Post(LoginUrl, "application/json", strings.NewReader(payload))
+	resp, err := httpClient.Post(LoginUrl, "application/json", strings.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -550,7 +601,7 @@ func RedeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
 		return nil, err
 	}
 
-	resp, err := http.Post(RedeemUrl, "application/json", strings.NewReader(payload))
+	resp, err := httpClient.Post(RedeemUrl, "application/json", strings.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
