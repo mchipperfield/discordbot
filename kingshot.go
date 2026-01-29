@@ -58,7 +58,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 var httpClient = http.Client{
 	Transport: &transport{
-		limiter: rate.NewLimiter(rate.Every(2*time.Second), 1),
+		limiter: rate.NewLimiter(rate.Every(1*time.Second), 1),
 	},
 }
 
@@ -444,50 +444,44 @@ func processNewCode(playerIDFile, newCode string) string {
 
 	results := make(chan string, len(csvRecords)-1)
 
-	var wg sync.WaitGroup
-	wg.Add(len(csvRecords) - 1)
 	for _, record := range csvRecords[1:] {
 		if len(record) != 2 {
-			wg.Done()
+
 			continue
 		}
-		go func() {
-			defer wg.Done()
 
-			playerID := record[0]
-			var resultMsg string
+		playerID := record[0]
+		var resultMsg string
 
-			// Small delay to avoid rate limiting
-			//time.Sleep(100 * time.Millisecond)
-			_, err = Login(playerID)
+		// Small delay to avoid rate limiting
+		time.Sleep(100 * time.Millisecond)
+		_, err = Login(playerID)
+		if err != nil {
+			slog.Error("failed to call login endpoint", "error", err)
+			resultMsg = "Failed to login."
+		} else {
+			redeemResp, err := RedeemGiftCode(playerID, newCode)
 			if err != nil {
-				slog.Error("failed to call login endpoint", "error", err)
-				resultMsg = "Failed to login."
+				slog.Error("failed to redeem", "error", err, "code", newCode, "player_id", playerID)
+				resultMsg = "Error redeeming code."
 			} else {
-				redeemResp, err := RedeemGiftCode(playerID, newCode)
-				if err != nil {
-					slog.Error("failed to redeem gift code in worker", "error", err, "code", newCode, "player_id", playerID)
-					resultMsg = "Error redeeming code."
-				} else {
-					slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
-					switch string(redeemResp.ErrCode) {
-					case ErrCodeSuccess:
-						resultMsg = "Successfully redeemed!"
-					case ErrCodeClaimed:
-						resultMsg = "Already claimed."
-					case ErrCodeLogin:
-						resultMsg = "Unable to login"
-					default:
-						resultMsg = "Failed to redeem."
-					}
+				slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
+				switch string(redeemResp.ErrCode) {
+				case ErrCodeSuccess:
+					resultMsg = "Successfully redeemed!"
+				case ErrCodeClaimed:
+					resultMsg = "Already claimed."
+				case ErrCodeLogin:
+					resultMsg = "Unable to login"
+				default:
+					resultMsg = "Failed to redeem."
 				}
 			}
-			results <- fmt.Sprintf("Player `%s`: %s", playerID, resultMsg)
+		}
+		results <- fmt.Sprintf("Player `%s`: %s", playerID, resultMsg)
 
-		}()
 	}
 
-	wg.Wait()
 	close(results)
 
 	// Collect results
