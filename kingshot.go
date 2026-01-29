@@ -289,8 +289,10 @@ func addCode(s *discordgo.Session, i *discordgo.InteractionCreate, playerIDFile 
 
 	// --- Command Logic ---
 	newCode := i.ApplicationCommandData().Options[0].StringValue()
+	response := fmt.Sprintf("Code %s received: processing...", newCode)
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 
-	response := processNewCode(playerIDFile, newCode)
+	response = processNewCode(playerIDFile, newCode)
 	if len(response) > 1900 {
 		// Split the response into chunks
 		var chunks []string
@@ -440,13 +442,11 @@ func processNewCode(playerIDFile, newCode string) string {
 	// --- Redeem for all players ---
 	var redemptionResults []string
 	redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", firstPlayerID, firstResultMsg))
-	time.Sleep(100 * time.Millisecond) // Delay after first request
 
 	results := make(chan string, len(csvRecords)-1)
 
 	for _, record := range csvRecords[1:] {
 		if len(record) != 2 {
-
 			continue
 		}
 
@@ -454,7 +454,7 @@ func processNewCode(playerIDFile, newCode string) string {
 		var resultMsg string
 
 		// Small delay to avoid rate limiting
-		time.Sleep(100 * time.Millisecond)
+		//time.Sleep(100 * time.Millisecond)
 		_, err = Login(playerID)
 		if err != nil {
 			slog.Error("failed to call login endpoint", "error", err)
