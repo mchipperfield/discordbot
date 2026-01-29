@@ -34,6 +34,7 @@ const (
 	ErrCodeClaimed  = "40008"
 	ErrCodeExpired  = "40007"
 	ErrCodeNotFound = "40014"
+	ErrCodeLogin    = "40009"
 )
 const r4RoleId = "1432032487021875373" // RoleId for permission check
 
@@ -57,7 +58,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 var httpClient = http.Client{
 	Transport: &transport{
-		limiter: rate.NewLimiter(rate.Every(200*time.Millisecond), 1),
+		limiter: rate.NewLimiter(rate.Every(2*time.Second), 1),
 	},
 }
 
@@ -232,6 +233,8 @@ func registerPlayer(s *discordgo.Session, i *discordgo.InteractionCreate, player
 		case ErrCodeExpired, ErrCodeNotFound:
 			resultMsg = "Code expired or not found."
 			codesToRemove = append(codesToRemove, code)
+		case ErrCodeLogin:
+			resultMsg = "Unable to login"
 		default:
 			resultMsg = "Failed to redeem code."
 		}
@@ -424,6 +427,8 @@ func processNewCode(playerIDFile, newCode string) string {
 		return fmt.Sprintf("Code `%s` has expired and was not added.", newCode)
 	case ErrCodeNotFound:
 		return fmt.Sprintf("Code `%s` is not valid and was not added.", newCode)
+	case ErrCodeLogin:
+		return fmt.Sprintf("Code `%s` could not be validated - unable to login.", newCode)
 	default:
 		firstResultMsg = "Failed to redeem code."
 	}
@@ -437,55 +442,51 @@ func processNewCode(playerIDFile, newCode string) string {
 	redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", firstPlayerID, firstResultMsg))
 	time.Sleep(100 * time.Millisecond) // Delay after first request
 
-	// --- Worker Pool Setup ---
-	const numWorkers = 5
-	jobs := make(chan []string, len(csvRecords)-1)
 	results := make(chan string, len(csvRecords)-1)
 
 	var wg sync.WaitGroup
-	for w := 1; w <= numWorkers; w++ {
-		wg.Add(1)
+	wg.Add(len(csvRecords) - 1)
+	for _, record := range csvRecords[1:] {
+		if len(record) != 2 {
+			wg.Done()
+			continue
+		}
 		go func() {
 			defer wg.Done()
-			for record := range jobs {
-				playerID := record[0]
-				var resultMsg string
 
-				// Small delay to avoid rate limiting
-				time.Sleep(100 * time.Millisecond)
-				_, err = Login(playerID)
+			playerID := record[0]
+			var resultMsg string
+
+			// Small delay to avoid rate limiting
+			//time.Sleep(100 * time.Millisecond)
+			_, err = Login(playerID)
+			if err != nil {
+				slog.Error("failed to call login endpoint", "error", err)
+				resultMsg = "Failed to login."
+			} else {
+				redeemResp, err := RedeemGiftCode(playerID, newCode)
 				if err != nil {
-					slog.Error("failed to call login endpoint before validating new code", "error", err)
-					resultMsg = "Failed to login."
+					slog.Error("failed to redeem gift code in worker", "error", err, "code", newCode, "player_id", playerID)
+					resultMsg = "Error redeeming code."
 				} else {
-					redeemResp, err := RedeemGiftCode(playerID, newCode)
-					if err != nil {
-						slog.Error("failed to redeem gift code in worker", "error", err, "code", newCode, "player_id", playerID)
-						resultMsg = "Error redeeming code."
-					} else {
-						slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
-						switch string(redeemResp.ErrCode) {
-						case ErrCodeSuccess:
-							resultMsg = "Successfully redeemed!"
-						case ErrCodeClaimed:
-							resultMsg = "Already claimed."
-						default:
-							resultMsg = "Failed to redeem."
-						}
+					slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
+					switch string(redeemResp.ErrCode) {
+					case ErrCodeSuccess:
+						resultMsg = "Successfully redeemed!"
+					case ErrCodeClaimed:
+						resultMsg = "Already claimed."
+					case ErrCodeLogin:
+						resultMsg = "Unable to login"
+					default:
+						resultMsg = "Failed to redeem."
 					}
 				}
-				results <- fmt.Sprintf("Player `%s`: %s", playerID, resultMsg)
 			}
+			results <- fmt.Sprintf("Player `%s`: %s", playerID, resultMsg)
+
 		}()
 	}
 
-	// Load up the jobs channel
-	for _, record := range csvRecords[1:] {
-		jobs <- record
-	}
-	close(jobs)
-
-	// Wait for all workers to finish
 	wg.Wait()
 	close(results)
 
@@ -562,7 +563,7 @@ type LoginResponse struct {
 func Login(fid string) (*LoginResponse, error) {
 	data := map[string]string{
 		"fid":  fid,
-		"time": fmt.Sprintf("%d", time.Now().Unix()+10),
+		"time": fmt.Sprintf("%d", time.Now().Unix()),
 	}
 
 	payload, err := EncodePayload(data)
@@ -578,7 +579,7 @@ func Login(fid string) (*LoginResponse, error) {
 
 	var loginResp LoginResponse
 	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode login response: %w", err)
 	}
 	return &loginResp, nil
 }
@@ -593,7 +594,7 @@ func RedeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
 	data := map[string]string{
 		"fid":  fid,
 		"cdk":  cdk,
-		"time": fmt.Sprintf("%d", time.Now().Unix()+10),
+		"time": fmt.Sprintf("%d", time.Now().Unix()),
 	}
 
 	payload, err := EncodePayload(data)
@@ -609,7 +610,7 @@ func RedeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
 
 	var redeemResponse RedeemResponse
 	if err := json.NewDecoder(resp.Body).Decode(&redeemResponse); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode redemption response: %w", err)
 	}
 
 	return &redeemResponse, nil
