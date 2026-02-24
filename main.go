@@ -101,6 +101,7 @@ func main() {
 	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))
 	session.AddHandler(Kit(*nxg))
 	session.AddHandler(listen(*nxg, dcaService.GetSound("hey_listen.dca")))
+	session.AddHandler(Blondie(*nxg))
 	session.AddHandler(americanSpellingPolice(spellings))
 	session.AddHandler(GiftCodeCommandHandler(*playerIDFile, *giftCodeChannelID))
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {

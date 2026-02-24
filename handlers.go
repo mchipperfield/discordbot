@@ -145,6 +145,30 @@ func Kit(serverId string) func(s *discordgo.Session, m *discordgo.MessageCreate)
 	}
 }
 
+func Blondie(serverId string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+	blondieRegex, err := regexp.Compile(`\bfull send\b`)
+	if err != nil {
+		slog.Info("failed to compile blondie regex", "error", err)
+		return nil
+	}
+	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
+		if m.GuildID != serverId {
+			return
+		}
+
+		if m.Author.ID == s.State.User.ID {
+			return
+		}
+
+		if blondieRegex.MatchString(strings.ToLower(m.Content)) {
+			_, err := s.ChannelMessageSendReply(m.ChannelID, "WWBD?", m.Reference())
+			if err != nil {
+				slog.Info("failed to send message", "error", err, "channel", m.ChannelID)
+			}
+		}
+	}
+}
+
 func listen(serverId string, opus [][]byte) func(s *discordgo.Session, m *discordgo.MessageCreate) {
 	listenRegex, err := regexp.Compile(`\blisten\b`)
 	if err != nil {
