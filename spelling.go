@@ -38,6 +38,8 @@ func LoadSpellingsFromURL(url string) (map[string]string, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("error reading spellings source: %w", err)
 	}
+	americanToBritish["bitch"] = "bish"
+	americanToBritish["bitches"] = "bishes"
 
 	return americanToBritish, nil
 }
