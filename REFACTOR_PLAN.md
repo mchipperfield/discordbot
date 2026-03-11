@@ -9,157 +9,164 @@ This bot serves two Discord servers with completely separate purposes:
 | `Server2985` ("SD") | `1339671620880699433` | Social server — fun reactions, quotes, voice gags |
 | `ServerNXG` ("NXG") | `1423406563850190850` | Gaming server — KingShot gift codes, AI Q&A, cat pics |
 
-The current codebase mixes both servers' handlers into the same files, has a race condition on shared global state, and has at least four distinct duplication patterns. Every step below follows the same discipline: **write tests first, then change the code.**
+Every step follows the same discipline: **write tests first, then change the code.**
 
 ---
 
 ## Principles
 
-- **One thing at a time** — each step is a single, reviewable PR
+- **One thing at a time** — each step is a single, reviewable commit
 - **Tests before refactor** — tests capture current behaviour; refactoring must keep them green
-- **No behaviour changes** — each step is purely structural unless a bug is being fixed as part of the step (noted explicitly)
-- **SOLID** — Single Responsibility, Open/Closed, Liskov, Interface Segregation, Dependency Inversion applied where they reduce complexity, not as dogma
+- **No behaviour changes** — each step is purely structural unless a bug is explicitly noted
+- **SOLID** — applied where it reduces complexity, not as dogma
 
 ---
 
-## Step 1 — Fix the race condition: introduce a `KingShot` struct
+## Progress
 
-### Problem
-`ActiveCodes`, `ExpiredCodes`, and `playerIDMutex` are package-level globals in `kingshot.go`.
-`ActiveCodes` and `ExpiredCodes` are read and written from both `registerPlayer` and `processNewCode` without holding the mutex, creating a real data race.
-
-### What changes
-- Introduce a `KingShot` struct that owns `activeCodes []string`, `expiredCodes []string`, `mu sync.Mutex`, `playerIDFile string`, and `httpClient *http.Client`
-- Move `Login`, `RedeemGiftCode`, `processNewCode`, `registerPlayer`, `addCode`, `messageHandler` to be methods on `*KingShot`
-- All reads/writes to `activeCodes` and `expiredCodes` go inside `mu.Lock()` / `mu.Unlock()`
-- Delete the three package-level vars
-
-### Tests to write first
-- `TestKingShotNewCode_AlreadyActive` — duplicate of `TestProcessNewCodeAlreadyActive` but using the struct
-- `TestKingShotNewCode_AlreadyExpired`
-- `TestKingShotNewCode_FileNotFound`
-- `TestKingShotNewCode_EmptyPlayerFile` — code added to active list, empty file returns the right message
-- Run `go test -race ./...` — this is the acceptance criterion; the race detector must be silent
-
-### Files touched
-`kingshot.go`, `kingshot_test.go`
+| Step | Status | Commit |
+|---|---|---|
+| 1 — Introduce `KingShot` struct | ✅ Done | `fd07611` |
+| 2 — Extract pure business logic from `processNewCode` | ✅ Done | `b066266` |
+| 3 — Extract trigger predicates | 🔲 Next | — |
+| 4 — Eliminate voice channel duplication | 🔲 Pending | — |
+| 5 — Guard-clause middleware | 🔲 Pending | — |
+| 6 — Fix `GiftCodeCommandHandler` Ready anti-pattern | 🔲 Pending | — |
+| 7 — Split into per-server packages | 🔲 Pending | — |
 
 ---
 
-## Step 2 — Extract pure business logic from `processNewCode`
+## ✅ Step 1 — Introduce `KingShot` struct *(done)*
 
-### Problem
-`processNewCode` is ~120 lines and does five distinct things:
-1. Duplicate-code check
-2. Read the player CSV
-3. Validate the code against the first player via the API
-4. Redeem the code for all remaining players
-5. Format the result string
+**Problem:** Three package-level globals (`ActiveCodes`, `ExpiredCodes`, `playerIDMutex`) plus a global `httpClient` made tests either unreliable (shared state) or impossible (no HTTP injection).
 
-None of steps 1–4 can be tested independently because the logic is inlined.
+**What was done:**
+- `KingShot` struct owns `activeCodes`, `expiredCodes`, `mu`, `client`, `loginURL`, `redeemURL`
+- All handler functions became methods; no state leaks to package scope
+- `loginURL`/`redeemURL` as fields allow test servers to be injected
+- `login` and `redeemGiftCode` became unexported methods using `ks.client`
+- Extracted `hasCodePermission`, `chunkMessage`, `reply`, `readPlayerFile`, `writePlayerFile`
+- Added `const discordMaxMessageLen = 1900`
+- Fixed hardcoded `"1423406563850190850"` string in command registration to use `ServerNXG`
 
-### What changes
-Extract the following methods on `*KingShot`:
-```
-isCodeKnown(code string) (active bool, expired bool)
-loadPlayers(file string) ([]string, error)
-validateCode(playerID, code string) (resultMsg string, shouldAdd bool, err error)
-redeemForPlayer(playerID, code string) (resultMsg string, err error)
-formatRedemptionReport(code string, results []string) string
-```
-`processNewCode` becomes a thin orchestrator that calls these in order.
+**Tests added:** `TestKingShot_processNewCode` (4 sub-tests), `TestKingShot_concurrentAccess`
 
-### Tests to write first
-- `TestIsCodeKnown` — table-driven: active code, expired code, unknown code
-- `TestLoadPlayers` — valid CSV, empty file, malformed rows, missing file
-- `TestValidateCode` — use `httptest.NewServer` to mock the KingShot API:
-  - success response → `shouldAdd = true`
-  - expired response → `shouldAdd = false`, code added to `expiredCodes`
-  - not-found response → `shouldAdd = false`
-  - login failure response
-- `TestRedeemForPlayer` — same mock server, table-driven on each ErrCode
-- `TestFormatRedemptionReport` — pure string formatting, no I/O
-
-### Files touched
-`kingshot.go`, `kingshot_test.go`
+**Acceptance:** `go test -race ./...` — 30 tests, race detector silent.
 
 ---
 
-## Step 3 — Extract trigger predicates from all message handlers
+## ✅ Step 2 — Extract pure business logic from `processNewCode` *(done)*
+
+**Problem:** `processNewCode` was 70 lines doing five things. Three identical `switch string(redeemResp.ErrCode)` blocks were duplicated across `processNewCode`, `redeemActiveCodes`, and `redeemForPlayers`.
+
+**What was done:**
+- `interpretRedeemResult(ErrCode) redeemOutcome` — pure function, single source of truth for all API error code interpretation. Replaced all three switch blocks.
+- `isCodeKnown(code) (active, expired bool)` — readable guard, testable without I/O
+- `loadPlayerIDs() ([]string, error)` — focused CSV reader returning just the ID column
+- `redeemForPlayer(playerID, code) string` — single-player login+redeem+interpret pipeline
+- `formatRedemptionReport(code, playerCount, results) string` — pure string formatting
+- `processNewCode` is now ~30 lines reading as a clear sequence
+- `redeemForPlayers` deleted — replaced by a plain loop using `redeemForPlayer`
+
+**Tests added:** `TestInterpretRedeemResult` (6), `TestKingShot_isCodeKnown` (4), `TestKingShot_loadPlayerIDs` (4), `TestKingShot_redeemForPlayer` (5 incl. HTTP failure), `TestFormatRedemptionReport`, `TestChunkMessage` (4)
+
+**Acceptance:** `go test -race ./...` — 47 tests, race detector silent.
+
+---
+
+## 🔲 Step 3 — Extract trigger predicates from message handlers
 
 ### Problem
-Every handler embeds its trigger condition inline (`strings.Contains`, `regexp.MatchString`) mixed with Discord session calls. This means the detection logic cannot be tested without a real Discord session.
-
-### What changes
-Extract one pure function per handler that answers "does this message content match?":
+Every handler buries its "should I fire?" logic inline, entangled with Discord session calls:
 
 ```go
-// handlers.go (or new file handler_predicates.go)
-func isHungry(content string) bool
-func isTired(content string) bool
-func isKit(content string) bool
-func isFullSend(content string) bool
-func isListen(content string) bool
+// Kit (handlers.go)
+if kitRegex.MatchString(strings.ToLower(m.Content)) {
+    resp, err := http.Get("https://api.thecatapi.com/...") // can't test this without the check
 ```
 
-Move all compiled regexes to package-level `var` (they are already closures — make them explicit).
-Each handler calls the predicate and does nothing else if it returns false.
+The trigger conditions (`strings.Contains`, `regexp.MatchString`) cannot be tested without constructing a full Discord message object.
+
+### What changes
+New file `handler_predicates.go` with one pure function per handler trigger:
+
+```go
+func isHungry(content string) bool   // strings.Contains, case-insensitive
+func isTired(content string) bool    // strings.Contains, case-insensitive
+func isKit(content string) bool      // word-boundary regex \bkit\b
+func isFullSend(content string) bool // word-boundary regex \bfull send\b
+func isListen(content string) bool   // word-boundary regex \blisten\b
+```
+
+Package-level compiled regexes (currently re-compiled on each closure call in `Kit`, `Blondie`, `listen`) move to `var` declarations at the top of the file. Each handler body becomes a single predicate check at the top, then does its work.
 
 ### Tests to write first (new file `handler_predicates_test.go`)
-Table-driven tests for each predicate:
 
 | Predicate | True cases | False cases |
 |---|---|---|
-| `isHungry` | `"I'm hungry"`, `"HUNGRY"` | `"I'm full"`, `""` |
-| `isTired` | `"so tired"`, `"TIRED today"` | `"not sleepy"`, `""` |
-| `isKit` | `"got a kit"`, `"KIT"` | `"kitten"`, `"skit"` (word boundary) |
+| `isHungry` | `"I'm hungry"`, `"HUNGRY!"` | `"I'm full"`, `""` |
+| `isTired` | `"so tired today"`, `"TIRED"` | `"not sleepy"`, `""` |
+| `isKit` | `"got a kit"`, `"KIT"` | `"kitten"`, `"skit"` (word boundary matters) |
 | `isFullSend` | `"full send it"`, `"FULL SEND"` | `"fullsend"`, `"half send"` |
-| `isListen` | `"listen up"`, `"LISTEN"` | `"listening"` (word boundary) |
+| `isListen` | `"listen up"`, `"LISTEN"` | `"listening"`, `"mislistened"` (word boundary matters) |
 
 ### Files touched
-`handlers.go` (or new `handler_predicates.go`), new `handler_predicates_test.go`
+New `handler_predicates.go`, new `handler_predicates_test.go`, `handlers.go`
 
 ---
 
-## Step 4 — Eliminate voice channel duplication
+## 🔲 Step 4 — Eliminate voice channel duplication
 
 ### Problem
-`wakeUp` and `listen` contain identical 24-line blocks for joining a voice channel, playing opus frames, and disconnecting.
-There is also a latent panic: if `s.State.Guild()` returns an error, the code logs it but proceeds to iterate `guild.VoiceStates` on the nil pointer.
+`wakeUp` and `listen` contain byte-for-byte identical 24-line blocks. There is also a latent nil-pointer panic: if `s.State.Guild()` returns an error the code logs it but still iterates `guild.VoiceStates` on a nil pointer.
+
+```go
+// This block is copy-pasted verbatim in both handlers
+guild, err := s.State.Guild(m.GuildID)
+if err != nil {
+    slog.Info("failed to get guild", ...) // logs, but does NOT return
+}
+for _, vs := range guild.VoiceStates { // panics if guild == nil
+```
 
 ### What changes
-Extract a standalone function:
+Extract to `voice.go`:
+
 ```go
-// playAudioToUser joins the voice channel of userID in guildID and plays opusFrames.
-// Returns an error if the user is not in any voice channel.
+// playAudioToUser joins the voice channel of userID in guildID, plays opusFrames,
+// then disconnects. Returns an error if the guild or user's voice state cannot be found.
 func playAudioToUser(s *discordgo.Session, guildID, userID string, opusFrames [][]byte) error
 ```
 
-Fix the nil-guild panic: return the error from `s.State.Guild()` instead of continuing.
-Add a `break` after sending audio (no reason to check other voice states after the user is found).
+Fix the bug: return early on guild-not-found instead of continuing. Add `break` after sending audio — once the user is found there is no reason to keep iterating voice states.
 
-`wakeUp` and `listen` become:
+Both handlers collapse to:
 ```go
-if err := playAudioToUser(s, m.GuildID, m.Author.ID, opus); err != nil {
-    slog.Info("could not play audio", "error", err, "user", m.Author.ID)
+if isTired(m.Content) {   // after Step 3
+    if err := playAudioToUser(s, m.GuildID, m.Author.ID, opus); err != nil {
+        slog.Info("could not play audio", "error", err)
+    }
 }
 ```
 
-### Tests to write first
-`playAudioToUser` needs a Discord session — we cannot easily unit-test the happy path without a live connection. Instead:
-- Test the **guard rail**: write a test that confirms `playAudioToUser` returns a descriptive error (not a panic) when the guild is not found
-- Use a `discordgo.Session` with an empty state — no real network needed for this path
-- The rest (actual audio playback) is integration-level; mark it with `t.Skip("requires live Discord")` if desired
+### Tests to write first (new file `voice_test.go`)
+The happy path (actual audio playback) requires a live Discord connection — mark those `t.Skip("requires live Discord")`. What we *can* test without a network:
+
+- `TestPlayAudioToUser_GuildNotFound` — pass a `discordgo.Session` with empty state, confirm a descriptive error is returned (not a panic)
+- `TestPlayAudioToUser_UserNotInVoice` — guild exists in state but has no voice states for the user, confirm a descriptive error is returned
+
+Both tests use `discordgo.State` directly to seed fixture data — no websocket needed.
 
 ### Files touched
-`handlers.go` (or new `voice.go`), new `voice_test.go`
+New `voice.go`, new `voice_test.go`, `handlers.go`
 
 ---
 
-## Step 5 — Extract the guard-clause middleware
+## 🔲 Step 5 — Guard-clause middleware
 
 ### Problem
-This exact six-line block appears in all six message handlers:
+This block appears verbatim in all six message handlers (36 lines total):
+
 ```go
 if m.GuildID != serverId {
     return
@@ -168,126 +175,156 @@ if m.Author.ID == s.State.User.ID {
     return
 }
 ```
-36 lines of copy-paste that must all be updated if the logic ever changes.
+
+`americanSpellingPolice` is the odd one out — it ignores self-messages but has **no guild filter**, meaning it fires on every server the bot is in. This is likely unintentional and should be a conscious decision, not an accident.
 
 ### What changes
-Extract:
+New file `middleware.go`:
+
 ```go
-// onMessage wraps a handler so it only fires for the given guild and never for the bot's own messages.
-func onMessage(guildID string, h func(*discordgo.Session, *discordgo.MessageCreate)) func(*discordgo.Session, *discordgo.MessageCreate) {
-    return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-        if m.GuildID != guildID {
-            return
-        }
-        if m.Author.ID == s.State.User.ID {
-            return
-        }
-        h(s, m)
-    }
-}
+// onMessage wraps h so it only fires for messages in guildID that were not
+// sent by the bot itself.
+func onMessage(guildID string, h func(*discordgo.Session, *discordgo.MessageCreate)) func(*discordgo.Session, *discordgo.MessageCreate)
+
+// onAnyMessage wraps h so it only fires for messages not sent by the bot itself,
+// regardless of guild. Used for cross-server handlers like americanSpellingPolice.
+func onAnyMessage(h func(*discordgo.Session, *discordgo.MessageCreate)) func(*discordgo.Session, *discordgo.MessageCreate)
 ```
 
-Registration in `main.go` becomes:
+Handler bodies lose their guard blocks. Registration in `main.go` becomes:
+
 ```go
-session.AddHandler(onMessage(*serverId, handleHungry))
-session.AddHandler(onMessage(*serverId, handleGetQuote(quotes)))
-session.AddHandler(onMessage(*serverId, handleWakeUp(dcaService.GetSound("wake_up.dca"))))
-session.AddHandler(onMessage(*nxg, handleKit))
-session.AddHandler(onMessage(*nxg, handleListen(dcaService.GetSound("hey_listen.dca"))))
-session.AddHandler(onMessage(*nxg, handleBlondie))
+session.AddHandler(onMessage(Server2985, handleHungry))
+session.AddHandler(onMessage(Server2985, handleGetQuote(quotes)))
+session.AddHandler(onMessage(Server2985, handleWakeUp(dcaService.GetSound("wake_up.dca"))))
+session.AddHandler(onMessage(ServerNXG, handleKit))
+session.AddHandler(onMessage(ServerNXG, handleListen(dcaService.GetSound("hey_listen.dca"))))
+session.AddHandler(onMessage(ServerNXG, handleBlondie))
+session.AddHandler(onAnyMessage(americanSpellingPolice(spellings)))
 ```
+
+The spelling handler's scope (all guilds vs one guild) becomes explicit and visible in `main.go`.
 
 ### Tests to write first (new file `middleware_test.go`)
-- `TestOnMessage_WrongGuild` — handler must not be called
-- `TestOnMessage_BotSelf` — handler must not be called
-- `TestOnMessage_Fires` — handler called with correct guild and non-bot author
+- `TestOnMessage_WrongGuild` — inner handler must not be called
+- `TestOnMessage_BotSelf` — inner handler must not be called
+- `TestOnMessage_Fires` — inner handler called with matching guild and non-bot author
+- `TestOnAnyMessage_BotSelf` — must not fire
+- `TestOnAnyMessage_Fires` — fires regardless of guild
 
 ### Files touched
 New `middleware.go`, new `middleware_test.go`, `handlers.go`, `main.go`
 
 ---
 
-## Step 6 — Fix the `GiftCodeCommandHandler` Ready-handler anti-pattern
+## 🔲 Step 6 — Fix the `GiftCodeCommandHandler` Ready anti-pattern
 
 ### Problem
-`GiftCodeCommandHandler` returns a `Ready` handler that, every time the bot connects, both registers slash commands **and** calls `s.AddHandler(...)` inside the running session. On reconnect, duplicate handlers accumulate and fire multiple times per event.
+`GiftCodeCommandHandler` is a Ready handler that, on *every reconnect*, both registers slash commands **and** calls `s.AddHandler(...)` inside the running session. On reconnect, duplicate handlers accumulate silently and fire multiple times per event.
 
-Additionally, main.go's own Ready handler deletes global commands (`""` scope) but `GiftCodeCommandHandler` creates guild-scoped commands — so the cleanup never removes them.
+The cleanup logic in `main.go`'s Ready handler only touches global-scope commands (`""`), while `GiftCodeCommandHandler` creates guild-scoped commands — so cleanup never runs on them.
 
 ### What changes
-1. Move slash command registration out of the Ready handler into a dedicated `registerCommands(s *discordgo.Session, guildID string, commands []*discordgo.ApplicationCommand) error` function called once after `session.Open()`
-2. Move `s.AddHandler(messageHandler(...))` and the interaction handler to `main.go` alongside all other `session.AddHandler(...)` calls
-3. Delete `GiftCodeCommandHandler` entirely
-4. Unify the command cleanup in main.go's Ready handler to cover the NXG guild as well
+1. Expose `KingShot` interaction and message handler methods directly:
+   ```go
+   func (ks *KingShot) InteractionHandler() func(*discordgo.Session, *discordgo.InteractionCreate)
+   func (ks *KingShot) GiftCodeMessageHandler(channelID string) func(*discordgo.Session, *discordgo.MessageCreate)
+   ```
+2. Register these once in `main.go` alongside all other `session.AddHandler(...)` calls — not inside a Ready callback
+3. Move slash command registration to a dedicated helper called once after `session.Open()`:
+   ```go
+   func registerSlashCommands(s *discordgo.Session, guildID string) error
+   ```
+4. Delete `GiftCodeCommandHandler` entirely
+5. Extend the cleanup in the existing Ready handler to also cover the NXG guild
 
 ### Tests to write first
-- `TestRegisterCommands_CreatesExpectedCommands` — mock the Discord API with `httptest.NewServer`, verify the correct slash commands are created with the right names and options
-- This is more of an integration smoke test; the main value is documenting the expected command set
+- `TestKingShot_InteractionHandler_Register` — verify routing to `registerPlayer` by checking the deferred response shape (mock Discord HTTP)
+- `TestKingShot_InteractionHandler_Code` — verify routing to `addCode` for a user without the r4 role, checking the permission-denied response
+- These are integration-level; use `httptest.NewServer` to mock the Discord REST API
 
 ### Files touched
 `kingshot.go`, `main.go`
 
 ---
 
-## Step 7 — Split into per-server packages
+## 🔲 Step 7 — Split into per-server packages
 
 ### Problem
-All handler logic lives in `main` package files. There is no visible boundary between SD and NXG. Adding a new SD feature requires opening the same file as NXG features.
+All handler logic lives in the `main` package. There is no visible boundary between SD and NXG features. Adding a handler to one server requires opening the same file as the other server's handlers.
 
-### Proposed package layout
+### Proposed layout
+
 ```
 discordbot/
-  main.go                    ← wiring only: flags, session, AddHandler calls
-  middleware.go              ← onMessage guard wrapper
-  spelling.go                ← spelling utilities (already clean)
+  main.go              ← wiring only: parse flags, open session, call Register()
+  middleware.go        ← onMessage / onAnyMessage (from Step 5)
+  spelling.go          ← LoadSpellingsFromURL, buildSpellingSuggestions (already clean)
   ai/
-    handler.go               ← existing, unchanged
+    handler.go         ← unchanged
   dca/
-    dca.go                   ← existing, unchanged
+    dca.go             ← unchanged
   server/
     sd/
-      handlers.go            ← hungry, getQuote, wakeUp
-      handlers_test.go
+      handlers.go      ← handleHungry, handleGetQuote, handleWakeUp + predicates
+      handlers_test.go ← predicate tests (moved from handler_predicates_test.go)
+      voice.go         ← playAudioToUser (moved from root)
+      voice_test.go
     nxg/
-      handlers.go            ← Kit, Blondie, listen, AskGemini
+      handlers.go      ← handleKit, handleBlondie, handleListen, handleAskGemini + predicates
       handlers_test.go
   kingshot/
-    service.go               ← KingShot struct, Login, RedeemGiftCode
+    service.go         ← KingShot struct, login, redeemGiftCode, EncodePayload, types
     service_test.go
-    store.go                 ← loadPlayers, CSV read/write
+    store.go           ← loadPlayerIDs, readPlayerFile, writePlayerFile
     store_test.go
-    handler.go               ← registerPlayer, addCode, messageHandler (Discord layer)
+    handler.go         ← registerPlayer, addCode, messageHandler, InteractionHandler, GiftCodeMessageHandler
     handler_test.go
 ```
 
-Each sub-package exposes a `Register(s *discordgo.Session, cfg Config)` function. `main.go` calls each one in turn — it knows nothing about how handlers are implemented.
+Each sub-package exposes a single entry point:
+```go
+// server/sd
+func Register(s *discordgo.Session, guildID string, sounds dca.Sounds, spellings map[string]string)
+
+// server/nxg
+func Register(s *discordgo.Session, guildID string, aiSvc *ai.Service, sounds dca.Sounds)
+
+// kingshot
+func (ks *KingShot) Register(s *discordgo.Session, giftCodeChannelID string)
+```
+
+`main.go` knows nothing about handler implementation — it only calls `Register`.
 
 ### Tests to write first
-- Each package's `handlers_test.go` tests the predicate functions and any pure business logic within that package
-- Integration tests for `Register(...)` can be marked `t.Skip` until a proper mock session is available
+- Predicate and pure-logic tests move into each sub-package's `_test.go` files
+- The `Register` functions themselves are wiring — tested at integration level with `t.Skip` guards for live Discord
 
 ### Files touched
-All files — this is the final structural step. Done last because all previous steps must be green.
+All files — this is the final structural step. Must be done last.
 
 ---
 
-## Issue Backlog (not blocking, address opportunistically)
+## Issue Backlog
+
+Items resolved as a side-effect of Steps 1–2 are struck through.
 
 | Issue | Location | Fix |
 |---|---|---|
-| `r4RoleId` hardcoded | `kingshot.go:39` | Make it a flag in `main.go` passed into `KingShot` |
-| KingShot API `Key` exposed in source | `kingshot.go:28` | Move to flag / environment variable |
-| Gemini model name hardcoded | `ai/handler.go:34` | Const or config field |
-| `1900` magic number | `kingshot.go:296,300` | `const discordMaxMessageLen = 2000` / use the right value |
-| Response chunking logic | `addCode()` | Extract `chunkMessage(s string, maxLen int) []string` |
-| `loadSound` prints to stdout | `dca/dca.go:47,63,67` | Replace with returned error / logger |
-| `EncodePayload` mutates its argument | `kingshot.go:517` | Return a new map or separate sign from payload |
+| `r4RoleId` hardcoded | `kingshot.go:42` | Make it a configurable flag passed into `NewKingShot` |
+| KingShot API `Key` in source | `kingshot.go:29` | Move to env var / flag |
+| Gemini model name hardcoded | `ai/handler.go:34` | Named const or config field on `Service` |
+| ~~`1900` magic number~~ | ~~`kingshot.go`~~ | ~~`const discordMaxMessageLen`~~ — done in Step 1 |
+| ~~`chunkMessage` not extracted~~ | ~~`addCode()`~~ | ~~done in Step 1~~ |
+| ~~Hardcoded `"1423406563850190850"` in `GiftCodeCommandHandler`~~ | ~~`kingshot.go:96`~~ | ~~Fixed to use `ServerNXG` in Step 1~~ |
+| `loadSound` prints to stdout | `dca/dca.go:47,63,67` | Replace `fmt.Println` with the injected logger |
+| `EncodePayload` mutates its argument | `kingshot.go` | Return a new map; don't modify the caller's data |
 
 ---
 
-## Acceptance Criteria (applies to every step)
+## Acceptance Criteria (every step)
 
-1. `go test -race ./...` passes with no failures and no race warnings
-2. `go vet ./...` passes cleanly
+1. `go test -race ./...` — no failures, no race warnings
+2. `go vet ./...` — clean
 3. No change in observable bot behaviour
-4. Each step is committed independently so it can be reviewed and reverted in isolation
+4. Each step committed independently so it can be reviewed and reverted in isolation
