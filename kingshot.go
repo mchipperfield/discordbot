@@ -259,41 +259,116 @@ func (ks *KingShot) messageHandler(channelID string) func(s *discordgo.Session, 
 
 // --- Core gift code business logic -------------------------------------------
 
+// redeemOutcome captures the structured result of a single redemption attempt.
+type redeemOutcome struct {
+	msg         string // player-facing result message
+	codeExpired bool   // true when ErrCodeExpired — remove from active list
+	codeInvalid bool   // true when ErrCodeNotFound — do not add to active list
+	loginFailed bool   // true when ErrCodeLogin — do not add to active list
+}
+
+// shouldAddToActive reports whether the code can be added to the active list.
+func (o redeemOutcome) shouldAddToActive() bool {
+	return !o.codeExpired && !o.codeInvalid && !o.loginFailed
+}
+
+// interpretRedeemResult maps a KingShot API error code to a structured outcome.
+// This is a pure function — no I/O, no state.
+func interpretRedeemResult(errCode ErrCode) redeemOutcome {
+	switch string(errCode) {
+	case ErrCodeSuccess:
+		return redeemOutcome{msg: "Successfully redeemed!"}
+	case ErrCodeClaimed:
+		return redeemOutcome{msg: "Already claimed."}
+	case ErrCodeExpired:
+		return redeemOutcome{msg: "Code expired or not found.", codeExpired: true}
+	case ErrCodeNotFound:
+		return redeemOutcome{msg: "Code is not valid.", codeInvalid: true}
+	case ErrCodeLogin:
+		return redeemOutcome{msg: "Unable to login.", loginFailed: true}
+	default:
+		return redeemOutcome{msg: "Failed to redeem code."}
+	}
+}
+
+// isCodeKnown reports whether code is already tracked by the gift code system.
+// Caller must hold ks.mu.
+func (ks *KingShot) isCodeKnown(code string) (active, expired bool) {
+	return slices.Contains(ks.activeCodes, code), slices.Contains(ks.expiredCodes, code)
+}
+
+// loadPlayerIDs reads the player CSV file and returns all player IDs in row order.
+func (ks *KingShot) loadPlayerIDs() ([]string, error) {
+	file, err := os.Open(ks.playerIDFile)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	records, err := csv.NewReader(file).ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		if len(record) >= 1 {
+			ids = append(ids, record[0])
+		}
+	}
+	return ids, nil
+}
+
+// redeemForPlayer logs playerID in, redeems code, and returns a human-readable
+// result message.
+func (ks *KingShot) redeemForPlayer(playerID, code string) string {
+	if _, err := ks.login(playerID); err != nil {
+		slog.Error("failed to login", "error", err, "player_id", playerID)
+		return "Failed to login."
+	}
+	resp, err := ks.redeemGiftCode(playerID, code)
+	if err != nil {
+		slog.Error("failed to redeem", "error", err, "player_id", playerID, "code", code)
+		return "Error redeeming code."
+	}
+	slog.Info("redeem response", "player_id", playerID, "code", code, "err_code", resp.ErrCode)
+	return interpretRedeemResult(resp.ErrCode).msg
+}
+
+// formatRedemptionReport builds the final summary message after a code has been
+// added and redeemed for all players. Pure function — no I/O, no state.
+func formatRedemptionReport(code string, playerCount int, results []string) string {
+	return fmt.Sprintf(
+		"Code `%s` has been added to the active list.\n\n**Redemption Results for %d players:**\n%s",
+		code, playerCount, strings.Join(results, "\n"),
+	)
+}
+
 // processNewCode validates newCode against the KingShot API and redeems it for
 // all registered players. It is safe to call concurrently.
 func (ks *KingShot) processNewCode(newCode string) string {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 
-	if slices.Contains(ks.activeCodes, newCode) {
+	if active, expired := ks.isCodeKnown(newCode); active {
 		return fmt.Sprintf("Code `%s` is already active.", newCode)
-	}
-	if slices.Contains(ks.expiredCodes, newCode) {
+	} else if expired {
 		return fmt.Sprintf("Code `%s` has expired and cannot be re-added.", newCode)
 	}
 
-	file, err := os.Open(ks.playerIDFile)
+	playerIDs, err := ks.loadPlayerIDs()
 	if err != nil {
 		return fmt.Sprintf("Code `%s` has not been added, as we failed to open player file.", newCode)
 	}
-	defer file.Close()
 
-	reader := csv.NewReader(file)
-	csvRecords, err := reader.ReadAll()
-	if err != nil {
-		return fmt.Sprintf("Code `%s` has not been added, as we failed to read player file to redeem.", newCode)
-	}
-
-	if len(csvRecords) == 0 {
+	if len(playerIDs) == 0 {
 		ks.activeCodes = append(ks.activeCodes, newCode)
 		slog.Info("code added with no registered players", "code", newCode)
 		return fmt.Sprintf("There are no registered players, but code `%s` has been added to the active list.", newCode)
 	}
 
-	firstPlayerID := csvRecords[0][0]
-
-	_, err = ks.login(firstPlayerID)
-	if err != nil {
+	firstPlayerID := playerIDs[0]
+	if _, err := ks.login(firstPlayerID); err != nil {
 		slog.Error("failed to login before validating new code", "error", err)
 		return fmt.Sprintf("Failed to validate code `%s` due to an error. The code has not been added.", newCode)
 	}
@@ -306,31 +381,28 @@ func (ks *KingShot) processNewCode(newCode string) string {
 
 	slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "player_id", firstPlayerID)
 
-	var firstResult string
-	switch string(redeemResp.ErrCode) {
-	case ErrCodeSuccess:
-		firstResult = "Successfully redeemed!"
-	case ErrCodeClaimed:
-		firstResult = "Already claimed."
-	case ErrCodeExpired:
+	outcome := interpretRedeemResult(redeemResp.ErrCode)
+	if outcome.codeExpired {
 		ks.expiredCodes = append(ks.expiredCodes, newCode)
 		return fmt.Sprintf("Code `%s` has expired and was not added.", newCode)
-	case ErrCodeNotFound:
+	}
+	if outcome.codeInvalid {
 		return fmt.Sprintf("Code `%s` is not valid and was not added.", newCode)
-	case ErrCodeLogin:
+	}
+	if outcome.loginFailed {
 		return fmt.Sprintf("Code `%s` could not be validated - unable to login.", newCode)
-	default:
-		firstResult = "Failed to redeem code."
 	}
 
 	ks.activeCodes = append(ks.activeCodes, newCode)
 	slog.Info("code added", "code", newCode)
 
-	results := []string{fmt.Sprintf("Player `%s`: %s", firstPlayerID, firstResult)}
-	results = append(results, ks.redeemForPlayers(csvRecords[1:], newCode)...)
+	results := make([]string, 0, len(playerIDs))
+	results = append(results, fmt.Sprintf("Player `%s`: %s", firstPlayerID, outcome.msg))
+	for _, playerID := range playerIDs[1:] {
+		results = append(results, fmt.Sprintf("Player `%s`: %s", playerID, ks.redeemForPlayer(playerID, newCode)))
+	}
 
-	return fmt.Sprintf("Code `%s` has been added to the active list.\n\n**Redemption Results for %d players:**\n%s",
-		newCode, len(csvRecords), strings.Join(results, "\n"))
+	return formatRedemptionReport(newCode, len(playerIDs), results)
 }
 
 // redeemActiveCodes redeems all currently active codes for playerID and returns
@@ -352,21 +424,11 @@ func (ks *KingShot) redeemActiveCodes(playerID string) string {
 		}
 		slog.Info("redeem response", "code", code, "err_code", redeemResp.ErrCode, "player_id", playerID)
 
-		var msg string
-		switch string(redeemResp.ErrCode) {
-		case ErrCodeSuccess:
-			msg = "Successfully redeemed!"
-		case ErrCodeClaimed:
-			msg = "Already claimed."
-		case ErrCodeExpired, ErrCodeNotFound:
-			msg = "Code expired or not found."
+		outcome := interpretRedeemResult(redeemResp.ErrCode)
+		if outcome.codeExpired || outcome.codeInvalid {
 			codesToRemove = append(codesToRemove, code)
-		case ErrCodeLogin:
-			msg = "Unable to login"
-		default:
-			msg = "Failed to redeem code."
 		}
-		results = append(results, fmt.Sprintf("`%s`: %s", code, msg))
+		results = append(results, fmt.Sprintf("`%s`: %s", code, outcome.msg))
 	}
 
 	if len(codesToRemove) > 0 {
@@ -376,52 +438,6 @@ func (ks *KingShot) redeemActiveCodes(playerID string) string {
 	}
 
 	return "\n\n**Gift Code Redemption Results:**\n" + strings.Join(results, "\n")
-}
-
-// redeemForPlayers redeems newCode for each player record (beyond the first,
-// which is already handled by the caller). Returns one result string per player.
-func (ks *KingShot) redeemForPlayers(records [][]string, newCode string) []string {
-	results := make(chan string, len(records))
-
-	for _, record := range records {
-		if len(record) != 2 {
-			continue
-		}
-		playerID := record[0]
-
-		var msg string
-		if _, err := ks.login(playerID); err != nil {
-			slog.Error("failed to login", "error", err, "player_id", playerID)
-			msg = "Failed to login."
-		} else {
-			redeemResp, err := ks.redeemGiftCode(playerID, newCode)
-			if err != nil {
-				slog.Error("failed to redeem", "error", err, "code", newCode, "player_id", playerID)
-				msg = "Error redeeming code."
-			} else {
-				slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "player_id", playerID)
-				switch string(redeemResp.ErrCode) {
-				case ErrCodeSuccess:
-					msg = "Successfully redeemed!"
-				case ErrCodeClaimed:
-					msg = "Already claimed."
-				case ErrCodeLogin:
-					msg = "Unable to login"
-				default:
-					msg = "Failed to redeem."
-				}
-			}
-		}
-		results <- fmt.Sprintf("Player `%s`: %s", playerID, msg)
-	}
-
-	close(results)
-
-	var out []string
-	for r := range results {
-		out = append(out, r)
-	}
-	return out
 }
 
 // --- File I/O ----------------------------------------------------------------

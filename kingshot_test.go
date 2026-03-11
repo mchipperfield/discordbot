@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"slices"
@@ -251,4 +253,257 @@ func TestRedeemResponseDecoding(t *testing.T) {
 	if resp.ErrCode != ErrCode(ErrCodeSuccess) {
 		t.Errorf("ErrCode = %q, want %q", resp.ErrCode, ErrCodeSuccess)
 	}
+}
+
+// --- Step 2 tests ------------------------------------------------------------
+
+// mockKingShotAPI starts an httptest server that responds to /player (login) and
+// /gift_code (redeem) with the provided values, and returns a KingShot wired to it.
+func mockKingShotAPI(t *testing.T, loginCode int, redeemErrCode string) *KingShot {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/player":
+			json.NewEncoder(w).Encode(LoginResponse{Code: loginCode})
+		case "/gift_code":
+			json.NewEncoder(w).Encode(RedeemResponse{ErrCode: ErrCode(redeemErrCode)})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &KingShot{
+		loginURL:  srv.URL + "/player",
+		redeemURL: srv.URL + "/gift_code",
+		client:    srv.Client(),
+	}
+}
+
+// writeTempCSV writes content to a temporary file and returns its path.
+func writeTempCSV(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "players-*.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	return f.Name()
+}
+
+// TestInterpretRedeemResult verifies that every known ErrCode maps to the
+// correct outcome flags and message. This is a pure function — no I/O needed.
+func TestInterpretRedeemResult(t *testing.T) {
+	tests := []struct {
+		errCode     ErrCode
+		wantMsg     string
+		wantExpired bool
+		wantInvalid bool
+		wantLogin   bool
+	}{
+		{ErrCodeSuccess, "Successfully redeemed!", false, false, false},
+		{ErrCodeClaimed, "Already claimed.", false, false, false},
+		{ErrCodeExpired, "Code expired or not found.", true, false, false},
+		{ErrCodeNotFound, "Code is not valid.", false, true, false},
+		{ErrCodeLogin, "Unable to login.", false, false, true},
+		{"99999", "Failed to redeem code.", false, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.errCode), func(t *testing.T) {
+			got := interpretRedeemResult(tt.errCode)
+			if got.msg != tt.wantMsg {
+				t.Errorf("msg = %q, want %q", got.msg, tt.wantMsg)
+			}
+			if got.codeExpired != tt.wantExpired {
+				t.Errorf("codeExpired = %v, want %v", got.codeExpired, tt.wantExpired)
+			}
+			if got.codeInvalid != tt.wantInvalid {
+				t.Errorf("codeInvalid = %v, want %v", got.codeInvalid, tt.wantInvalid)
+			}
+			if got.loginFailed != tt.wantLogin {
+				t.Errorf("loginFailed = %v, want %v", got.loginFailed, tt.wantLogin)
+			}
+		})
+	}
+}
+
+// TestKingShot_isCodeKnown verifies that active and expired membership is
+// detected correctly without touching any I/O.
+func TestKingShot_isCodeKnown(t *testing.T) {
+	ks := &KingShot{
+		activeCodes:  []string{"ACTIVE1", "ACTIVE2"},
+		expiredCodes: []string{"EXPIRED1"},
+	}
+	tests := []struct {
+		code        string
+		wantActive  bool
+		wantExpired bool
+	}{
+		{"ACTIVE1", true, false},
+		{"ACTIVE2", true, false},
+		{"EXPIRED1", false, true},
+		{"UNKNOWN", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.code, func(t *testing.T) {
+			active, expired := ks.isCodeKnown(tt.code)
+			if active != tt.wantActive {
+				t.Errorf("active = %v, want %v", active, tt.wantActive)
+			}
+			if expired != tt.wantExpired {
+				t.Errorf("expired = %v, want %v", expired, tt.wantExpired)
+			}
+		})
+	}
+}
+
+// TestKingShot_loadPlayerIDs verifies CSV parsing: valid file, empty file,
+// malformed rows, and missing file.
+func TestKingShot_loadPlayerIDs(t *testing.T) {
+	t.Run("valid CSV returns player IDs in order", func(t *testing.T) {
+		ks := &KingShot{playerIDFile: writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")}
+		ids, err := ks.loadPlayerIDs()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"player1", "player2"}
+		if len(ids) != len(want) {
+			t.Fatalf("got %d IDs, want %d: %v", len(ids), len(want), ids)
+		}
+		for i, id := range ids {
+			if id != want[i] {
+				t.Errorf("ids[%d] = %q, want %q", i, id, want[i])
+			}
+		}
+	})
+
+	t.Run("empty file returns empty slice", func(t *testing.T) {
+		ks := &KingShot{playerIDFile: writeTempCSV(t, "")}
+		ids, err := ks.loadPlayerIDs()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(ids) != 0 {
+			t.Errorf("expected empty slice, got %v", ids)
+		}
+	})
+
+	t.Run("malformed rows are skipped", func(t *testing.T) {
+		// CSV with a short row that has only one field
+		ks := &KingShot{playerIDFile: writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")}
+		ids, err := ks.loadPlayerIDs()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(ids) != 2 {
+			t.Errorf("expected 2 IDs, got %d: %v", len(ids), ids)
+		}
+	})
+
+	t.Run("missing file returns error", func(t *testing.T) {
+		ks := &KingShot{playerIDFile: "/nonexistent/file.csv"}
+		_, err := ks.loadPlayerIDs()
+		if err == nil {
+			t.Fatal("expected error for missing file, got nil")
+		}
+	})
+}
+
+// TestKingShot_redeemForPlayer tests the login → redeem → interpret pipeline
+// for a single player using a mock HTTP server.
+func TestKingShot_redeemForPlayer(t *testing.T) {
+	tests := []struct {
+		name          string
+		redeemErrCode string
+		wantMsg       string
+	}{
+		{"success", ErrCodeSuccess, "Successfully redeemed!"},
+		{"already claimed", ErrCodeClaimed, "Already claimed."},
+		{"login error from api", ErrCodeLogin, "Unable to login."},
+		{"unknown error code", "99999", "Failed to redeem code."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ks := mockKingShotAPI(t, 0, tt.redeemErrCode)
+			got := ks.redeemForPlayer("player1", "TESTCODE")
+			if got != tt.wantMsg {
+				t.Errorf("got %q, want %q", got, tt.wantMsg)
+			}
+		})
+	}
+
+	t.Run("login HTTP failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}))
+		t.Cleanup(srv.Close)
+		ks := &KingShot{
+			loginURL: srv.URL + "/player", redeemURL: srv.URL + "/gift_code",
+			client: srv.Client(),
+		}
+		got := ks.redeemForPlayer("player1", "TESTCODE")
+		if got != "Failed to login." {
+			t.Errorf("got %q, want %q", got, "Failed to login.")
+		}
+	})
+}
+
+// TestFormatRedemptionReport verifies the summary message format — pure, no I/O.
+func TestFormatRedemptionReport(t *testing.T) {
+	results := []string{
+		"Player `p1`: Successfully redeemed!",
+		"Player `p2`: Already claimed.",
+	}
+	got := formatRedemptionReport("TESTCODE", 2, results)
+
+	checks := []string{"TESTCODE", "2 players", "Successfully redeemed!", "Already claimed."}
+	for _, want := range checks {
+		if !strings.Contains(got, want) {
+			t.Errorf("report missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestChunkMessage verifies that long messages are split correctly.
+func TestChunkMessage(t *testing.T) {
+	t.Run("short message returned as-is", func(t *testing.T) {
+		chunks := chunkMessage("hello world", 100)
+		if len(chunks) != 1 || chunks[0] != "hello world" {
+			t.Errorf("got %v", chunks)
+		}
+	})
+
+	t.Run("exact length not split", func(t *testing.T) {
+		s := strings.Repeat("x", 100)
+		chunks := chunkMessage(s, 100)
+		if len(chunks) != 1 {
+			t.Errorf("expected 1 chunk, got %d", len(chunks))
+		}
+	})
+
+	t.Run("splits on newline boundary and round-trips", func(t *testing.T) {
+		s := "line1\nline2\nline3\nline4"
+		chunks := chunkMessage(s, 12)
+		for _, c := range chunks {
+			if len(c) > 12 {
+				t.Errorf("chunk %q (%d chars) exceeds maxLen 12", c, len(c))
+			}
+		}
+		if joined := strings.Join(chunks, "\n"); joined != s {
+			t.Errorf("round-trip failed:\n got: %q\nwant: %q", joined, s)
+		}
+	})
+
+	t.Run("no newlines falls back to hard cut", func(t *testing.T) {
+		s := strings.Repeat("x", 50)
+		chunks := chunkMessage(s, 20)
+		for _, c := range chunks {
+			if len(c) > 20 {
+				t.Errorf("chunk len %d exceeds 20", len(c))
+			}
+		}
+	})
 }
