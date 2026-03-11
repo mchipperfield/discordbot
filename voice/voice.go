@@ -1,4 +1,4 @@
-package main
+package voice
 
 import (
 	"fmt"
@@ -10,10 +10,10 @@ import (
 
 const voiceStartupDelay = 250 * time.Millisecond
 
-// playAudioToUser joins the voice channel of userID in guildID, plays opusFrames,
+// PlayAudioToUser joins the voice channel of userID in guildID, plays opusFrames,
 // then disconnects. Returns an error if the guild is not in state or the user
 // is not currently in any voice channel.
-func playAudioToUser(s *discordgo.Session, guildID, userID string, opusFrames [][]byte) error {
+func PlayAudioToUser(s *discordgo.Session, guildID, userID string, opusFrames [][]byte) error {
 	guild, err := s.State.Guild(guildID)
 	if err != nil {
 		return fmt.Errorf("guild %s not found in state: %w", guildID, err)

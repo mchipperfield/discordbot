@@ -63,7 +63,7 @@ func buildSpellingSuggestions(message string, americanToEnglish map[string]strin
 	return suggestions
 }
 
-func americanSpellingPolice(americanToEnglish map[string]string) MessageHandler {
+func americanSpellingPolice(americanToEnglish map[string]string) func(*discordgo.Session, *discordgo.MessageCreate) {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		suggestions := buildSpellingSuggestions(m.Content, americanToEnglish)
 		if len(suggestions) > 0 {

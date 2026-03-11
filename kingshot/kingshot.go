@@ -1,4 +1,4 @@
-package main
+package kingshot
 
 import (
 	"crypto/md5"
@@ -83,6 +83,12 @@ func NewKingShot(playerIDFile string) *KingShot {
 }
 
 // --- Discord handler wiring ---------------------------------------------------
+
+// Register adds the KingShot interaction and message handlers to s once at startup.
+func (ks *KingShot) Register(s *discordgo.Session, giftCodeChannelID string) {
+	s.AddHandler(ks.InteractionHandler())
+	s.AddHandler(ks.MessageHandler(giftCodeChannelID))
+}
 
 // GiftCodeCommands returns the slash command definitions for the KingShot gift
 // code system. Register these once in the Ready handler for the NXG guild.

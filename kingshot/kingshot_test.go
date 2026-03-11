@@ -1,4 +1,4 @@
-package main
+package kingshot
 
 import (
 	"encoding/json"

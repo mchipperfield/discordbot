@@ -10,30 +10,17 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/mchipperfield/discordbot/dca"
-	"github.com/peterbourgon/ff"
-
 	"github.com/bwmarrin/discordgo"
 	"github.com/mchipperfield/discordbot/ai"
+	"github.com/mchipperfield/discordbot/dca"
+	"github.com/mchipperfield/discordbot/kingshot"
+	"github.com/mchipperfield/discordbot/middleware"
+	"github.com/mchipperfield/discordbot/server/nxg"
+	"github.com/mchipperfield/discordbot/server/sd"
+	"github.com/peterbourgon/ff"
 )
 
-var quotes = []string{
-	"honestly",
-	"sumptuous",
-	"in my tenure",
-	"the thiinnng is",
-	"#cheers",
-	"You know where it is",
-	"it's not too bad actually",
-	"i love the chocolate starfish",
-	"i'm always prepared!",
-	"Up the Spurs!",
-	"SEND OUT!!!",
-	"You are ENOUGH!",
-	"I, do NOT fail!",
-}
-
-var commands = []*discordgo.ApplicationCommand{
+var askCommand = []*discordgo.ApplicationCommand{
 	{
 		Name:        "ask",
 		Description: "Ask the bot a question",
@@ -48,7 +35,8 @@ var commands = []*discordgo.ApplicationCommand{
 	},
 }
 
-// Server2985 is the guild id for the SD server.
+// Server2985 is the guild ID for the SD server.
+// ServerNXG is the guild ID for the NXG gaming server.
 const (
 	Server2985 = "1339671620880699433"
 	ServerNXG  = "1423406563850190850"
@@ -61,7 +49,7 @@ func main() {
 	var (
 		token             = fs.String("bot_token", "", "bot authentication token")
 		serverId          = fs.String("server_id", Server2985, "server to listen on")
-		nxg               = fs.String("nxg_server_id", ServerNXG, "NXG server id")
+		nxgID             = fs.String("nxg_server_id", ServerNXG, "NXG server id")
 		spellingURL       = fs.String("spelling_url", "https://gist.githubusercontent.com/ZekNikZ/5e7dd531df99be4408bd768ded36aad9/raw/c0ecc900022d60d54accb3770f2e737dcba738ad/british-american-words.txt", "URL to uk-us dictionary file")
 		geminiAPIKey      = fs.String("gemini_api_key", "", "API key for Gemini AI service")
 		playerIDFile      = fs.String("player_id_file", "player_ids.csv", "File to store player IDs")
@@ -82,6 +70,7 @@ func main() {
 		logger.Info("failed to load spellings", "error", err)
 		os.Exit(1)
 	}
+
 	aiService, err := ai.NewService(*geminiAPIKey)
 	if err != nil {
 		logger.Info("no AI service available, /ask command will be disabled", "reason", err)
@@ -99,47 +88,41 @@ func main() {
 		os.Exit(1)
 	}
 
-	if aiService != nil {
-		session.AddHandler(AskGemini(aiService))
-	}
-	session.AddHandler(onMessage(*serverId, hungry()))
-	session.AddHandler(onMessage(*serverId, getQuote(quotes)))
-	session.AddHandler(onMessage(*serverId, wakeUp(dcaService.GetSound("wake_up.dca"))))
-	session.AddHandler(onMessage(*nxg, Kit()))
-	session.AddHandler(onMessage(*nxg, listen(dcaService.GetSound("hey_listen.dca"))))
-	session.AddHandler(onMessage(*nxg, Blondie()))
-	session.AddHandler(onAnyMessage(americanSpellingPolice(spellings)))
-	ks := NewKingShot(*playerIDFile)
-	session.AddHandler(ks.InteractionHandler())
-	session.AddHandler(ks.MessageHandler(*giftCodeChannelID))
+	ks := kingshot.NewKingShot(*playerIDFile)
+
+	// Register all handlers once at startup — never inside a Ready callback.
+	sd.Register(session, *serverId, dcaService.GetSound("wake_up.dca"))
+	nxg.Register(session, *nxgID, dcaService.GetSound("hey_listen.dca"), aiService)
+	ks.Register(session, *giftCodeChannelID)
+	session.AddHandler(middleware.OnAnyMessage(americanSpellingPolice(spellings)))
+
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
 
 		// Clean up old commands to ensure a fresh state.
-		existingCommands, err := s.ApplicationCommands(s.State.User.ID, *nxg)
-		if err != nil {
-			logger.Info("could not fetch existing commands", "error", err)
-		} else {
-			for _, v := range existingCommands {
-				err := s.ApplicationCommandDelete(s.State.User.ID, "", v.ID)
-				if err != nil {
+		for _, guildID := range []string{"", *nxgID} {
+			existing, err := s.ApplicationCommands(s.State.User.ID, guildID)
+			if err != nil {
+				logger.Info("could not fetch existing commands", "guild", guildID, "error", err)
+				continue
+			}
+			for _, v := range existing {
+				if err := s.ApplicationCommandDelete(s.State.User.ID, guildID, v.ID); err != nil {
 					logger.Info("cannot delete command", "command", v.Name, "error", err)
 				}
 			}
 		}
 
 		// Register global commands.
-		for _, v := range commands {
-			_, err := s.ApplicationCommandCreate(s.State.User.ID, "", v)
-			if err != nil {
+		for _, v := range askCommand {
+			if _, err := s.ApplicationCommandCreate(s.State.User.ID, "", v); err != nil {
 				logger.Info("cannot create command", "command", v.Name, "error", err)
 			}
 		}
 
 		// Register NXG guild commands.
 		for _, v := range ks.GiftCodeCommands() {
-			_, err := s.ApplicationCommandCreate(s.State.User.ID, *nxg, v)
-			if err != nil {
+			if _, err := s.ApplicationCommandCreate(s.State.User.ID, *nxgID, v); err != nil {
 				logger.Error("cannot create command", "command", v.Name, "error", err)
 			}
 		}
@@ -156,7 +139,6 @@ func main() {
 	sig := <-stopChan
 
 	logger.Info("signal received", "signal", sig)
-
 }
 
 type logger struct {

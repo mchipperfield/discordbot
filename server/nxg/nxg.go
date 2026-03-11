@@ -1,55 +1,44 @@
-package main
+package nxg
 
 import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/mchipperfield/discordbot/ai"
+	"github.com/mchipperfield/discordbot/middleware"
+	"github.com/mchipperfield/discordbot/voice"
 )
 
-func getQuote(quotes []string) MessageHandler {
-	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if !isQuoteCommand(m.Content) {
-			return
-		}
-		n := rand.IntN(len(quotes) - 1)
-		if _, err := s.ChannelMessageSend(m.ChannelID, quotes[n]); err != nil {
-			slog.Info("failed to send message", "error", err, "channel", m.ChannelID)
-		}
+var (
+	kitRegex      = regexp.MustCompile(`\bkit\b`)
+	fullSendRegex = regexp.MustCompile(`\bfull send\b`)
+	listenRegex   = regexp.MustCompile(`\blisten\b`)
+)
+
+// Register wires all NXG server handlers onto s for the given guildID.
+// listenSound is the pre-loaded opus audio for the listen gag; pass nil to disable.
+// aiSvc is optional — pass nil to skip the /ask command handler.
+func Register(s *discordgo.Session, guildID string, listenSound [][]byte, aiSvc *ai.Service) {
+	s.AddHandler(middleware.OnMessage(guildID, kit()))
+	s.AddHandler(middleware.OnMessage(guildID, blondie()))
+	s.AddHandler(middleware.OnMessage(guildID, listenAudio(listenSound)))
+	if aiSvc != nil {
+		s.AddHandler(askGemini(aiSvc))
 	}
 }
 
-func hungry() MessageHandler {
-	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if !isHungry(m.Content) {
-			return
-		}
-		if _, err := s.ChannelMessageSend(m.ChannelID, "<@"+m.Author.ID+"> Hungry? You know where the fridge is!"); err != nil {
-			slog.Info("failed to send message", "error", err, "channel", m.ChannelID)
-		}
-	}
-}
+// --- Handlers ----------------------------------------------------------------
 
-func wakeUp(opus [][]byte) MessageHandler {
-	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if !isTired(m.Content) {
-			return
-		}
-		if err := playAudioToUser(s, m.GuildID, m.Author.ID, opus); err != nil {
-			slog.Info("could not play wake-up audio", "error", err, "user", m.Author.ID)
-		}
-	}
-}
-
-type CatImage struct {
+type catImage struct {
 	URL string `json:"url"`
 }
 
-func Kit() MessageHandler {
+func kit() func(*discordgo.Session, *discordgo.MessageCreate) {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if !isKit(m.Content) {
 			return
@@ -66,7 +55,7 @@ func Kit() MessageHandler {
 			slog.Info("failed to read cat image response body", "error", err)
 			return
 		}
-		var catImages []CatImage
+		var catImages []catImage
 		if err := json.Unmarshal(body, &catImages); err != nil {
 			slog.Info("failed to unmarshal cat image response", "error", err)
 			return
@@ -80,7 +69,7 @@ func Kit() MessageHandler {
 	}
 }
 
-func Blondie() MessageHandler {
+func blondie() func(*discordgo.Session, *discordgo.MessageCreate) {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if !isFullSend(m.Content) {
 			return
@@ -91,18 +80,18 @@ func Blondie() MessageHandler {
 	}
 }
 
-func listen(opus [][]byte) MessageHandler {
+func listenAudio(opus [][]byte) func(*discordgo.Session, *discordgo.MessageCreate) {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if !isListen(m.Content) {
 			return
 		}
-		if err := playAudioToUser(s, m.GuildID, m.Author.ID, opus); err != nil {
+		if err := voice.PlayAudioToUser(s, m.GuildID, m.Author.ID, opus); err != nil {
 			slog.Info("could not play listen audio", "error", err, "user", m.Author.ID)
 		}
 	}
 }
 
-func AskGemini(service *ai.Service) func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func askGemini(service *ai.Service) func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		if i.Type != discordgo.InteractionApplicationCommand {
 			return
@@ -128,4 +117,18 @@ func AskGemini(service *ai.Service) func(s *discordgo.Session, i *discordgo.Inte
 			slog.Error("failed to edit interaction response", "error", err)
 		}
 	}
+}
+
+// --- Predicates --------------------------------------------------------------
+
+func isKit(content string) bool {
+	return kitRegex.MatchString(strings.ToLower(content))
+}
+
+func isFullSend(content string) bool {
+	return fullSendRegex.MatchString(strings.ToLower(content))
+}
+
+func isListen(content string) bool {
+	return listenRegex.MatchString(strings.ToLower(content))
 }
