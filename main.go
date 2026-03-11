@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"flag"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/mchipperfield/discordbot/dca"
@@ -67,6 +70,8 @@ func main() {
 	if err := ff.Parse(fs,
 		os.Args[1:],
 		ff.WithEnvVarNoPrefix(),
+		ff.WithConfigFile(".env"),
+		ff.WithConfigFileParser(dotEnvParser),
 	); err != nil {
 		logger.Log("failed to parse flags", "error", err)
 		os.Exit(1)
@@ -79,8 +84,7 @@ func main() {
 	}
 	aiService, err := ai.NewService(*geminiAPIKey)
 	if err != nil {
-		logger.Info("failed to create ai service", "error", err)
-		os.Exit(1)
+		logger.Info("no AI service available, /ask command will be disabled", "reason", err)
 	}
 
 	dcaService, err := dca.NewService(logger)
@@ -95,14 +99,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	session.AddHandler(AskGemini(aiService))
-	session.AddHandler(hungry(*serverId))
-	session.AddHandler(getQuote(*serverId, quotes))
-	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))
-	session.AddHandler(Kit(*nxg))
-	session.AddHandler(listen(*nxg, dcaService.GetSound("hey_listen.dca")))
-	session.AddHandler(Blondie(*nxg))
-	session.AddHandler(americanSpellingPolice(spellings))
+	if aiService != nil {
+		session.AddHandler(AskGemini(aiService))
+	}
+	session.AddHandler(onMessage(*serverId, hungry()))
+	session.AddHandler(onMessage(*serverId, getQuote(quotes)))
+	session.AddHandler(onMessage(*serverId, wakeUp(dcaService.GetSound("wake_up.dca"))))
+	session.AddHandler(onMessage(*nxg, Kit()))
+	session.AddHandler(onMessage(*nxg, listen(dcaService.GetSound("hey_listen.dca"))))
+	session.AddHandler(onMessage(*nxg, Blondie()))
+	session.AddHandler(onAnyMessage(americanSpellingPolice(spellings)))
 	ks := NewKingShot(*playerIDFile)
 	session.AddHandler(ks.GiftCodeCommandHandler(*giftCodeChannelID))
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
@@ -151,4 +157,26 @@ type logger struct {
 func (l logger) Log(msg string, keyvals ...any) error {
 	l.Logger.Info(msg, keyvals...)
 	return nil
+}
+
+// dotEnvParser reads a .env file in KEY=VALUE format (one per line).
+// Lines starting with # and blank lines are ignored.
+func dotEnvParser(r io.Reader, set func(name, value string) error) error {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(parts[0]))
+		value := strings.TrimSpace(parts[1])
+		if err := set(name, value); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }

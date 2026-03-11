@@ -11,14 +11,8 @@ import (
 	"github.com/mchipperfield/discordbot/ai"
 )
 
-func getQuote(serverId string, quotes []string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+func getQuote(quotes []string) MessageHandler {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if m.GuildID != serverId {
-			return
-		}
-		if m.Author.ID == s.State.User.ID {
-			return
-		}
 		if !isQuoteCommand(m.Content) {
 			return
 		}
@@ -29,14 +23,8 @@ func getQuote(serverId string, quotes []string) func(s *discordgo.Session, m *di
 	}
 }
 
-func hungry(serverId string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+func hungry() MessageHandler {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if m.GuildID != serverId {
-			return
-		}
-		if m.Author.ID == s.State.User.ID {
-			return
-		}
 		if !isHungry(m.Content) {
 			return
 		}
@@ -46,14 +34,8 @@ func hungry(serverId string) func(s *discordgo.Session, m *discordgo.MessageCrea
 	}
 }
 
-func wakeUp(serverId string, opus [][]byte) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+func wakeUp(opus [][]byte) MessageHandler {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if m.GuildID != serverId {
-			return
-		}
-		if m.Author.ID == s.State.User.ID {
-			return
-		}
 		if !isTired(m.Content) {
 			return
 		}
@@ -67,14 +49,8 @@ type CatImage struct {
 	URL string `json:"url"`
 }
 
-func Kit(serverId string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+func Kit() MessageHandler {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if m.GuildID != serverId {
-			return
-		}
-		if m.Author.ID == s.State.User.ID {
-			return
-		}
 		if !isKit(m.Content) {
 			return
 		}
@@ -104,14 +80,8 @@ func Kit(serverId string) func(s *discordgo.Session, m *discordgo.MessageCreate)
 	}
 }
 
-func Blondie(serverId string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+func Blondie() MessageHandler {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if m.GuildID != serverId {
-			return
-		}
-		if m.Author.ID == s.State.User.ID {
-			return
-		}
 		if !isFullSend(m.Content) {
 			return
 		}
@@ -121,14 +91,8 @@ func Blondie(serverId string) func(s *discordgo.Session, m *discordgo.MessageCre
 	}
 }
 
-func listen(serverId string, opus [][]byte) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+func listen(opus [][]byte) MessageHandler {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if m.GuildID != serverId {
-			return
-		}
-		if m.Author.ID == s.State.User.ID {
-			return
-		}
 		if !isListen(m.Content) {
 			return
 		}

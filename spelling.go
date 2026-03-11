@@ -63,12 +63,8 @@ func buildSpellingSuggestions(message string, americanToEnglish map[string]strin
 	return suggestions
 }
 
-func americanSpellingPolice(americanToEnglish map[string]string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+func americanSpellingPolice(americanToEnglish map[string]string) MessageHandler {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if m.Author.ID == s.State.User.ID {
-			return
-		}
-
 		suggestions := buildSpellingSuggestions(m.Content, americanToEnglish)
 		if len(suggestions) > 0 {
 			reply := fmt.Sprintf("Did you mean: %s?", strings.Join(suggestions, ", "))
