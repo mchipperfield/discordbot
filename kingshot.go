@@ -22,13 +22,14 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// API endpoints and signing key for the KingShot gift code service.
 const (
-	LoginUrl  string = "https://kingshot-giftcode.centurygame.com/api/player"
-	RedeemUrl string = "https://kingshot-giftcode.centurygame.com/api/gift_code"
-	Key       string = "mN4!pQs6JrYwV9"
+	defaultLoginURL  = "https://kingshot-giftcode.centurygame.com/api/player"
+	defaultRedeemURL = "https://kingshot-giftcode.centurygame.com/api/gift_code"
+	Key              = "mN4!pQs6JrYwV9"
 )
 
-// Error codes from the KingShot API
+// Error codes returned by the KingShot API.
 const (
 	ErrCodeSuccess  = "20000"
 	ErrCodeClaimed  = "40008"
@@ -36,33 +37,57 @@ const (
 	ErrCodeNotFound = "40014"
 	ErrCodeLogin    = "40009"
 )
-const r4RoleId = "1432032487021875373" // RoleId for permission check
 
-var ActiveCodes = []string{}
+// r4RoleId is the Discord role that is allowed to add gift codes.
+const r4RoleId = "1432032487021875373"
 
-var ExpiredCodes []string
+// discordMaxMessageLen is the safe character limit for a single Discord message.
+const discordMaxMessageLen = 1900
 
-var playerIDMutex = &sync.Mutex{}
-
+// transport is a rate-limited http.RoundTripper.
 type transport struct {
 	limiter *rate.Limiter
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	err := t.limiter.Wait(req.Context())
-	if err != nil {
+	if err := t.limiter.Wait(req.Context()); err != nil {
 		return nil, err
 	}
 	return http.DefaultTransport.RoundTrip(req)
 }
 
-var httpClient = http.Client{
-	Transport: &transport{
-		limiter: rate.NewLimiter(rate.Every(1*time.Second), 1),
-	},
+// KingShot manages gift code state and handles all KingShot-related Discord
+// interactions. All mutable state is owned here; no package-level globals.
+type KingShot struct {
+	mu           sync.Mutex
+	activeCodes  []string
+	expiredCodes []string
+	playerIDFile string
+	client       *http.Client
+	loginURL     string
+	redeemURL    string
 }
 
-func GiftCodeCommandHandler(playerIDFile, giftCodeChannelID string) func(s *discordgo.Session, r *discordgo.Ready) {
+// NewKingShot returns a KingShot ready for production use.
+func NewKingShot(playerIDFile string) *KingShot {
+	return &KingShot{
+		playerIDFile: playerIDFile,
+		loginURL:     defaultLoginURL,
+		redeemURL:    defaultRedeemURL,
+		client: &http.Client{
+			Transport: &transport{
+				limiter: rate.NewLimiter(rate.Every(1*time.Second), 1),
+			},
+		},
+	}
+}
+
+// --- Discord handler wiring ---------------------------------------------------
+
+// GiftCodeCommandHandler returns a Ready handler that registers the /register
+// and /code slash commands and wires up the supporting message and interaction
+// handlers for the NXG guild.
+func (ks *KingShot) GiftCodeCommandHandler(giftCodeChannelID string) func(s *discordgo.Session, r *discordgo.Ready) {
 	return func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Registering gift code commands and handlers")
 		commands := []*discordgo.ApplicationCommand{
@@ -93,7 +118,7 @@ func GiftCodeCommandHandler(playerIDFile, giftCodeChannelID string) func(s *disc
 		}
 
 		for _, v := range commands {
-			_, err := s.ApplicationCommandCreate(s.State.User.ID, "1423406563850190850", v)
+			_, err := s.ApplicationCommandCreate(s.State.User.ID, ServerNXG, v)
 			if err != nil {
 				slog.Error("cannot create command", "command", v.Name, "error", err)
 			}
@@ -104,16 +129,16 @@ func GiftCodeCommandHandler(playerIDFile, giftCodeChannelID string) func(s *disc
 			}
 			switch i.ApplicationCommandData().Name {
 			case "register":
-				registerPlayer(s, i, playerIDFile)
+				ks.registerPlayer(s, i)
 			case "code":
-				addCode(s, i, playerIDFile)
+				ks.addCode(s, i)
 			}
 		})
-		s.AddHandler(messageHandler(playerIDFile, giftCodeChannelID))
+		s.AddHandler(ks.messageHandler(giftCodeChannelID))
 	}
 }
 
-func registerPlayer(s *discordgo.Session, i *discordgo.InteractionCreate, playerIDFile string) {
+func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
@@ -125,142 +150,53 @@ func registerPlayer(s *discordgo.Session, i *discordgo.InteractionCreate, player
 	playerID := i.ApplicationCommandData().Options[0].StringValue()
 	discordID := i.Member.User.ID
 
-	// Validate Player ID with KingShot API
-	loginResp, err := Login(playerID)
+	loginResp, err := ks.login(playerID)
 	if err != nil {
 		slog.Error("failed to call login endpoint", "error", err)
-		response := "Error validating player ID. Please try again later."
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+		reply(s, i, "Error validating player ID. Please try again later.")
 		return
 	}
-
 	if loginResp.Code != 0 {
-		slog.Info("invalid player id", "player_id", playerID, "response_code", loginResp.Code, "response_message", loginResp.Message)
-		response := "Invalid player ID provided."
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+		slog.Info("invalid player id", "player_id", playerID, "response_code", loginResp.Code)
+		reply(s, i, "Invalid player ID provided.")
 		return
 	}
 
-	playerIDMutex.Lock()
-	defer playerIDMutex.Unlock()
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
 
-	// Read existing records
-	playerToDiscord := make(map[string]string)
-
-	file, err := os.OpenFile(playerIDFile, os.O_RDWR|os.O_CREATE, 0644)
+	playerToDiscord, err := ks.readPlayerFile()
 	if err != nil {
-		slog.Error("failed to open or create player id file", "error", err, "file", playerIDFile)
-		response := "Error registering player ID."
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
-		return
-	}
-	defer file.Close()
-
-	reader := csv.NewReader(file)
-	csvRecords, err := reader.ReadAll()
-	if err != nil && err != io.EOF {
-		slog.Error("failed to read csv records", "error", err, "file", playerIDFile)
-		response := "Error registering player ID."
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+		slog.Error("failed to read player file for registration", "error", err)
+		reply(s, i, "Error registering player ID.")
 		return
 	}
 
-	for _, record := range csvRecords {
-		if len(record) == 2 {
-			playerToDiscord[record[0]] = record[1]
-		}
-	}
-
-	// Check if player ID is already registered.
 	if existingDiscordID, ok := playerToDiscord[playerID]; ok {
 		if existingDiscordID == discordID {
-			response := "This player ID is already registered to your Discord account."
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
-			return
+			reply(s, i, "This player ID is already registered to your Discord account.")
+		} else {
+			reply(s, i, "This player ID is already registered to another Discord account.")
 		}
-		response := "This player ID is already registered to another Discord account."
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
 		return
 	}
 
-	// Add the new player ID.
 	playerToDiscord[playerID] = discordID
-
-	// Rewrite the entire file with updated records.
-	if err := file.Truncate(0); err != nil {
-		slog.Error("failed to truncate player id file", "error", err)
-	}
-	if _, err := file.Seek(0, 0); err != nil {
-		slog.Error("failed to seek player id file", "error", err)
-	}
-
-	writer := csv.NewWriter(file)
-	for pID, dID := range playerToDiscord {
-		if err := writer.Write([]string{pID, dID}); err != nil {
-			slog.Error("failed to write record to csv", "error", err)
-		}
-	}
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		slog.Error("failed to flush csv writer", "error", err)
-		response := "Error registering player ID."
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+	if err := ks.writePlayerFile(playerToDiscord); err != nil {
+		slog.Error("failed to write player file", "error", err)
+		reply(s, i, "Error registering player ID.")
 		return
 	}
 
 	slog.Info("user subscribed to bot", "player_id", playerID, "discord_id", discordID)
 
 	response := "**Registration Successful!**\n**Your player ID *" + playerID + "* has been registered successfully!**"
+	response += ks.redeemActiveCodes(playerID)
 
-	// After successful registration to the service, we will redeem any active codes for the user.
-	var redemptionResults []string
-	var codesToRemove []string
-
-	for _, code := range ActiveCodes {
-		redeemResp, err := RedeemGiftCode(playerID, code)
-		if err != nil {
-			slog.Error("failed to redeem gift code after registration", "error", err, "code", code, "player_id", playerID)
-			redemptionResults = append(redemptionResults, fmt.Sprintf("`%s`: Error redeeming code.", code))
-			continue
-		}
-		slog.Info("redeem response", "code", code, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
-		var resultMsg string
-		switch string(redeemResp.ErrCode) {
-		case ErrCodeSuccess:
-			resultMsg = "Successfully redeemed!"
-		case ErrCodeClaimed:
-			resultMsg = "Already claimed."
-		case ErrCodeExpired, ErrCodeNotFound:
-			resultMsg = "Code expired or not found."
-			codesToRemove = append(codesToRemove, code)
-		case ErrCodeLogin:
-			resultMsg = "Unable to login"
-		default:
-			resultMsg = "Failed to redeem code."
-		}
-		redemptionResults = append(redemptionResults, fmt.Sprintf("`%s`: %s", code, resultMsg))
-	}
-
-	// Remove expired or not-found codes from ActiveCodes
-	if len(codesToRemove) > 0 {
-		ActiveCodes = slices.DeleteFunc(ActiveCodes, func(c string) bool {
-			return slices.Contains(codesToRemove, c)
-		})
-	}
-
-	if len(redemptionResults) > 0 {
-		response += "\n\n**Gift Code Redemption Results:**\n" + strings.Join(redemptionResults, "\n")
-	}
-
-	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: &response,
-	})
-	if err != nil {
-		slog.Error("failed to edit interaction response for register", "error", err)
-	}
+	reply(s, i, response)
 }
 
-func addCode(s *discordgo.Session, i *discordgo.InteractionCreate, playerIDFile string) {
+func (ks *KingShot) addCode(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
@@ -269,68 +205,24 @@ func addCode(s *discordgo.Session, i *discordgo.InteractionCreate, playerIDFile 
 		return
 	}
 
-	// --- Permission Check ---
-	hasPermission := i.Member.Permissions&discordgo.PermissionAdministrator == discordgo.PermissionAdministrator
-
-	if !hasPermission {
-		for _, roleID := range i.Member.Roles {
-			if roleID == r4RoleId {
-				hasPermission = true
-				break
-			}
-		}
-	}
-
-	if !hasPermission {
-		response := "You do not have permission to use this command."
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+	if !hasCodePermission(i.Member) {
+		reply(s, i, "You do not have permission to use this command.")
 		return
 	}
 
-	// --- Command Logic ---
 	newCode := i.ApplicationCommandData().Options[0].StringValue()
-	response := fmt.Sprintf("Code %s received: processing...", newCode)
-	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &response})
+	reply(s, i, fmt.Sprintf("Code %s received: processing...", newCode))
 
-	response = processNewCode(playerIDFile, newCode)
-	if len(response) > 1900 {
-		// Split the response into chunks
-		var chunks []string
-		for len(response) > 0 {
-			runeLimit := 1900
-			if len(response) < runeLimit {
-				runeLimit = len(response)
-			}
-			// Ensure we don't split in the middle of a line
-			lastNewline := strings.LastIndex(response[:runeLimit], "\n")
-			if lastNewline == -1 {
-				lastNewline = runeLimit
-			}
-			chunks = append(chunks, response[:lastNewline])
-			response = response[lastNewline:]
-			if len(response) > 0 && response[0] == '\n' {
-				response = response[1:]
-			}
-		}
-		for _, chunk := range chunks {
-			s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-				Content: chunk,
-			})
-		}
-	} else {
-		s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: response,
-		})
+	result := ks.processNewCode(newCode)
+	for _, chunk := range chunkMessage(result, discordMaxMessageLen) {
+		s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: chunk})
 	}
 }
 
-func messageHandler(playerIDFile, channelID string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
-	// Regex to find a gift code from the message content
+func (ks *KingShot) messageHandler(channelID string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
 	codeRegex := regexp.MustCompile(`Gift Code: ([A-Z0-9]+)`)
 
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		// Ignore messages that are not from a bot, not in the specified channel, or not a default message type.
-		// This is indicative of a message from a "followed" channel.
 		if !m.Author.Bot || m.ChannelID != channelID || m.Type != discordgo.MessageTypeDefault {
 			return
 		}
@@ -346,20 +238,17 @@ func messageHandler(playerIDFile, channelID string) func(s *discordgo.Session, m
 		newCode := matches[1]
 		slog.Info("extracted gift code", "code", newCode)
 
-		// Send a thinking message
 		thinkingMsg, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Processing new gift code: `%s`...", newCode))
 		if err != nil {
 			slog.Error("failed to send thinking message", "error", err)
 		}
 
-		result := processNewCode(playerIDFile, newCode)
+		result := ks.processNewCode(newCode)
 
-		// Edit the original message with the result
 		if thinkingMsg != nil {
 			_, err := s.ChannelMessageEdit(thinkingMsg.ChannelID, thinkingMsg.ID, result)
 			if err != nil {
 				slog.Error("failed to edit message with result", "error", err)
-				// Fallback to sending a new message if edit fails
 				s.ChannelMessageSend(m.ChannelID, result)
 			}
 		} else {
@@ -368,21 +257,22 @@ func messageHandler(playerIDFile, channelID string) func(s *discordgo.Session, m
 	}
 }
 
-// processNewCode handles the logic of validating and redeeming a new gift code.
-func processNewCode(playerIDFile, newCode string) string {
-	playerIDMutex.Lock()
-	defer playerIDMutex.Unlock()
+// --- Core gift code business logic -------------------------------------------
 
-	// Check if code already exists
-	if slices.Contains(ActiveCodes, newCode) {
+// processNewCode validates newCode against the KingShot API and redeems it for
+// all registered players. It is safe to call concurrently.
+func (ks *KingShot) processNewCode(newCode string) string {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	if slices.Contains(ks.activeCodes, newCode) {
 		return fmt.Sprintf("Code `%s` is already active.", newCode)
 	}
-	if slices.Contains(ExpiredCodes, newCode) {
+	if slices.Contains(ks.expiredCodes, newCode) {
 		return fmt.Sprintf("Code `%s` has expired and cannot be re-added.", newCode)
 	}
 
-	// Read registered players
-	file, err := os.Open(playerIDFile)
+	file, err := os.Open(ks.playerIDFile)
 	if err != nil {
 		return fmt.Sprintf("Code `%s` has not been added, as we failed to open player file.", newCode)
 	}
@@ -395,177 +285,204 @@ func processNewCode(playerIDFile, newCode string) string {
 	}
 
 	if len(csvRecords) == 0 {
-		// Still add the code to the active list for future registrations.
-		ActiveCodes = append(ActiveCodes, newCode)
-		slog.Info("code added", "code", newCode)
+		ks.activeCodes = append(ks.activeCodes, newCode)
+		slog.Info("code added with no registered players", "code", newCode)
 		return fmt.Sprintf("There are no registered players, but code `%s` has been added to the active list.", newCode)
 	}
 
-	// --- Validate code with the first player ---
 	firstPlayerID := csvRecords[0][0]
 
-	_, err = Login(firstPlayerID)
+	_, err = ks.login(firstPlayerID)
 	if err != nil {
-		slog.Error("failed to call login endpoint before validating new code", "error", err)
+		slog.Error("failed to login before validating new code", "error", err)
 		return fmt.Sprintf("Failed to validate code `%s` due to an error. The code has not been added.", newCode)
 	}
 
-	redeemResp, err := RedeemGiftCode(firstPlayerID, newCode)
+	redeemResp, err := ks.redeemGiftCode(firstPlayerID, newCode)
 	if err != nil {
 		slog.Error("failed to validate new code", "error", err, "code", newCode)
 		return fmt.Sprintf("Failed to validate code `%s` due to an error. The code has not been added.", newCode)
 	}
 
-	// Test redemption result for first player.
-	var firstResultMsg string
-	slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", firstPlayerID)
+	slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "player_id", firstPlayerID)
+
+	var firstResult string
 	switch string(redeemResp.ErrCode) {
 	case ErrCodeSuccess:
-		firstResultMsg = "Successfully redeemed!"
+		firstResult = "Successfully redeemed!"
 	case ErrCodeClaimed:
-		firstResultMsg = "Already claimed."
+		firstResult = "Already claimed."
 	case ErrCodeExpired:
-		ExpiredCodes = append(ExpiredCodes, newCode)
+		ks.expiredCodes = append(ks.expiredCodes, newCode)
 		return fmt.Sprintf("Code `%s` has expired and was not added.", newCode)
 	case ErrCodeNotFound:
 		return fmt.Sprintf("Code `%s` is not valid and was not added.", newCode)
 	case ErrCodeLogin:
 		return fmt.Sprintf("Code `%s` could not be validated - unable to login.", newCode)
 	default:
-		firstResultMsg = "Failed to redeem code."
+		firstResult = "Failed to redeem code."
 	}
 
-	// Add code to active list if not expired or invalid
-	ActiveCodes = append(ActiveCodes, newCode)
+	ks.activeCodes = append(ks.activeCodes, newCode)
 	slog.Info("code added", "code", newCode)
 
-	// --- Redeem for all players ---
-	var redemptionResults []string
-	redemptionResults = append(redemptionResults, fmt.Sprintf("Player `%s`: %s", firstPlayerID, firstResultMsg))
+	results := []string{fmt.Sprintf("Player `%s`: %s", firstPlayerID, firstResult)}
+	results = append(results, ks.redeemForPlayers(csvRecords[1:], newCode)...)
 
-	results := make(chan string, len(csvRecords)-1)
+	return fmt.Sprintf("Code `%s` has been added to the active list.\n\n**Redemption Results for %d players:**\n%s",
+		newCode, len(csvRecords), strings.Join(results, "\n"))
+}
 
-	for _, record := range csvRecords[1:] {
+// redeemActiveCodes redeems all currently active codes for playerID and returns
+// a formatted summary string. Caller must hold ks.mu.
+func (ks *KingShot) redeemActiveCodes(playerID string) string {
+	if len(ks.activeCodes) == 0 {
+		return ""
+	}
+
+	var results []string
+	var codesToRemove []string
+
+	for _, code := range ks.activeCodes {
+		redeemResp, err := ks.redeemGiftCode(playerID, code)
+		if err != nil {
+			slog.Error("failed to redeem gift code after registration", "error", err, "code", code, "player_id", playerID)
+			results = append(results, fmt.Sprintf("`%s`: Error redeeming code.", code))
+			continue
+		}
+		slog.Info("redeem response", "code", code, "err_code", redeemResp.ErrCode, "player_id", playerID)
+
+		var msg string
+		switch string(redeemResp.ErrCode) {
+		case ErrCodeSuccess:
+			msg = "Successfully redeemed!"
+		case ErrCodeClaimed:
+			msg = "Already claimed."
+		case ErrCodeExpired, ErrCodeNotFound:
+			msg = "Code expired or not found."
+			codesToRemove = append(codesToRemove, code)
+		case ErrCodeLogin:
+			msg = "Unable to login"
+		default:
+			msg = "Failed to redeem code."
+		}
+		results = append(results, fmt.Sprintf("`%s`: %s", code, msg))
+	}
+
+	if len(codesToRemove) > 0 {
+		ks.activeCodes = slices.DeleteFunc(ks.activeCodes, func(c string) bool {
+			return slices.Contains(codesToRemove, c)
+		})
+	}
+
+	return "\n\n**Gift Code Redemption Results:**\n" + strings.Join(results, "\n")
+}
+
+// redeemForPlayers redeems newCode for each player record (beyond the first,
+// which is already handled by the caller). Returns one result string per player.
+func (ks *KingShot) redeemForPlayers(records [][]string, newCode string) []string {
+	results := make(chan string, len(records))
+
+	for _, record := range records {
 		if len(record) != 2 {
 			continue
 		}
-
 		playerID := record[0]
-		var resultMsg string
 
-		// Small delay to avoid rate limiting
-		//time.Sleep(100 * time.Millisecond)
-		_, err = Login(playerID)
-		if err != nil {
-			slog.Error("failed to call login endpoint", "error", err)
-			resultMsg = "Failed to login."
+		var msg string
+		if _, err := ks.login(playerID); err != nil {
+			slog.Error("failed to login", "error", err, "player_id", playerID)
+			msg = "Failed to login."
 		} else {
-			redeemResp, err := RedeemGiftCode(playerID, newCode)
+			redeemResp, err := ks.redeemGiftCode(playerID, newCode)
 			if err != nil {
 				slog.Error("failed to redeem", "error", err, "code", newCode, "player_id", playerID)
-				resultMsg = "Error redeeming code."
+				msg = "Error redeeming code."
 			} else {
-				slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "message", redeemResp.Message, "player_id", playerID)
+				slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "player_id", playerID)
 				switch string(redeemResp.ErrCode) {
 				case ErrCodeSuccess:
-					resultMsg = "Successfully redeemed!"
+					msg = "Successfully redeemed!"
 				case ErrCodeClaimed:
-					resultMsg = "Already claimed."
+					msg = "Already claimed."
 				case ErrCodeLogin:
-					resultMsg = "Unable to login"
+					msg = "Unable to login"
 				default:
-					resultMsg = "Failed to redeem."
+					msg = "Failed to redeem."
 				}
 			}
 		}
-		results <- fmt.Sprintf("Player `%s`: %s", playerID, resultMsg)
-
+		results <- fmt.Sprintf("Player `%s`: %s", playerID, msg)
 	}
 
 	close(results)
 
-	// Collect results
-	for result := range results {
-		redemptionResults = append(redemptionResults, result)
+	var out []string
+	for r := range results {
+		out = append(out, r)
 	}
-
-	return fmt.Sprintf("Code `%s` has been added to the active list.\n\n**Redemption Results for %d players:**\n%s", newCode, len(csvRecords), strings.Join(redemptionResults, "\n"))
+	return out
 }
 
-// EncodePayload encodes the data map into a JSON string with an MD5 signature
-// This is the required format for the KingShot API.
-func EncodePayload(data map[string]string) (string, error) {
-	values := url.Values{}
+// --- File I/O ----------------------------------------------------------------
 
-	// 2. Data Encoding/Serialization (The Python equivalent of f"{key}={...}")
-	for key, value := range data {
-		values.Set(key, value)
-	}
+// readPlayerFile reads the CSV player file and returns a playerID → discordID map.
+// Caller must hold ks.mu.
+func (ks *KingShot) readPlayerFile() (map[string]string, error) {
+	playerToDiscord := make(map[string]string)
 
-	// Signature Generation (MD5 Hashing)
-	// Combine encoded data and secret: "{encoded_data}{secret}"
-	dataToHash := values.Encode() + Key
-
-	// Calculate MD5 hash
-	hasher := md5.New()
-	hasher.Write([]byte(dataToHash))
-
-	// Convert the hash bytes to a hex string
-	signature := hex.EncodeToString(hasher.Sum(nil))
-
-	// Return the original data, with signature
-	data["sign"] = signature
-
-	payload, err := json.Marshal(data)
+	file, err := os.OpenFile(ks.playerIDFile, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return string(payload), nil
-}
+	defer file.Close()
 
-// ErrCode is a custom type to handle err_code being a number or a string.
-type ErrCode string
-
-// UnmarshalJSON implements the json.Unmarshaler interface.
-func (e *ErrCode) UnmarshalJSON(data []byte) error {
-	// Try to unmarshal as a string.
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		*e = ErrCode(s)
-		return nil
+	reader := csv.NewReader(file)
+	csvRecords, err := reader.ReadAll()
+	if err != nil && err != io.EOF {
+		return nil, err
 	}
 
-	// If it's not a string, try to unmarshal as a number.
-	var i int
-	if err := json.Unmarshal(data, &i); err == nil {
-		*e = ErrCode(strconv.Itoa(i))
-		return nil
+	for _, record := range csvRecords {
+		if len(record) == 2 {
+			playerToDiscord[record[0]] = record[1]
+		}
 	}
-
-	return fmt.Errorf("err_code is not a string or a number: %s", data)
+	return playerToDiscord, nil
 }
 
-// LoginResponse represents the response from the login endpoint.
-// ErrCode is a custom type to handle err_code being a number or a string.
-type LoginResponse struct {
-	Code    int     `json:"code"`
-	Message string  `json:"msg"`
-	Data    any     `json:"data"`
-	ErrCode ErrCode `json:"err_code"`
+// writePlayerFile overwrites the CSV player file with the given map.
+// Caller must hold ks.mu.
+func (ks *KingShot) writePlayerFile(playerToDiscord map[string]string) error {
+	file, err := os.OpenFile(ks.playerIDFile, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	w := csv.NewWriter(file)
+	for pID, dID := range playerToDiscord {
+		if err := w.Write([]string{pID, dID}); err != nil {
+			return err
+		}
+	}
+	w.Flush()
+	return w.Error()
 }
 
-func Login(fid string) (*LoginResponse, error) {
+// --- KingShot API client -----------------------------------------------------
+
+// login authenticates fid with the KingShot API.
+func (ks *KingShot) login(fid string) (*LoginResponse, error) {
 	data := map[string]string{
 		"fid":  fid,
 		"time": fmt.Sprintf("%d", time.Now().Unix()),
 	}
-
 	payload, err := EncodePayload(data)
 	if err != nil {
 		return nil, err
 	}
-
-	resp, err := httpClient.Post(LoginUrl, "application/json", strings.NewReader(payload))
+	resp, err := ks.client.Post(ks.loginURL, "application/json", strings.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -578,34 +495,125 @@ func Login(fid string) (*LoginResponse, error) {
 	return &loginResp, nil
 }
 
+// redeemGiftCode submits a redemption request for fid and cdk.
+func (ks *KingShot) redeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
+	data := map[string]string{
+		"fid":  fid,
+		"cdk":  cdk,
+		"time": fmt.Sprintf("%d", time.Now().Unix()),
+	}
+	payload, err := EncodePayload(data)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ks.client.Post(ks.redeemURL, "application/json", strings.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var redeemResp RedeemResponse
+	if err := json.NewDecoder(resp.Body).Decode(&redeemResp); err != nil {
+		return nil, fmt.Errorf("failed to decode redemption response: %w", err)
+	}
+	return &redeemResp, nil
+}
+
+// --- Payload encoding --------------------------------------------------------
+
+// EncodePayload encodes the data map into a signed JSON payload for the
+// KingShot API. It adds a "sign" field to data as a side effect.
+func EncodePayload(data map[string]string) (string, error) {
+	values := url.Values{}
+	for key, value := range data {
+		values.Set(key, value)
+	}
+
+	hasher := md5.New()
+	hasher.Write([]byte(values.Encode() + Key))
+	data["sign"] = hex.EncodeToString(hasher.Sum(nil))
+
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+// --- API response types -------------------------------------------------------
+
+// ErrCode handles the KingShot API's habit of returning err_code as either a
+// JSON string or a JSON number.
+type ErrCode string
+
+func (e *ErrCode) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*e = ErrCode(s)
+		return nil
+	}
+	var i int
+	if err := json.Unmarshal(data, &i); err == nil {
+		*e = ErrCode(strconv.Itoa(i))
+		return nil
+	}
+	return fmt.Errorf("err_code is not a string or a number: %s", data)
+}
+
+type LoginResponse struct {
+	Code    int     `json:"code"`
+	Message string  `json:"msg"`
+	Data    any     `json:"data"`
+	ErrCode ErrCode `json:"err_code"`
+}
+
 type RedeemResponse struct {
 	Code    int     `json:"code"`
 	Message string  `json:"msg"`
 	ErrCode ErrCode `json:"err_code"`
 }
 
-func RedeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
-	data := map[string]string{
-		"fid":  fid,
-		"cdk":  cdk,
-		"time": fmt.Sprintf("%d", time.Now().Unix()),
-	}
+// --- Helpers -----------------------------------------------------------------
 
-	payload, err := EncodePayload(data)
+// hasCodePermission returns true if the member is an administrator or has the
+// r4 role.
+func hasCodePermission(member *discordgo.Member) bool {
+	if member.Permissions&discordgo.PermissionAdministrator == discordgo.PermissionAdministrator {
+		return true
+	}
+	for _, roleID := range member.Roles {
+		if roleID == r4RoleId {
+			return true
+		}
+	}
+	return false
+}
+
+// chunkMessage splits s into slices of at most maxLen characters, breaking on
+// newline boundaries where possible.
+func chunkMessage(s string, maxLen int) []string {
+	if len(s) <= maxLen {
+		return []string{s}
+	}
+	var chunks []string
+	for len(s) > 0 {
+		end := maxLen
+		if len(s) < end {
+			end = len(s)
+		}
+		if idx := strings.LastIndex(s[:end], "\n"); idx != -1 {
+			end = idx
+		}
+		chunks = append(chunks, s[:end])
+		s = strings.TrimPrefix(s[end:], "\n")
+	}
+	return chunks
+}
+
+// reply edits the deferred interaction response with the given message.
+func reply(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
+	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
 	if err != nil {
-		return nil, err
+		slog.Error("failed to edit interaction response", "error", err)
 	}
-
-	resp, err := httpClient.Post(RedeemUrl, "application/json", strings.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var redeemResponse RedeemResponse
-	if err := json.NewDecoder(resp.Body).Decode(&redeemResponse); err != nil {
-		return nil, fmt.Errorf("failed to decode redemption response: %w", err)
-	}
-
-	return &redeemResponse, nil
 }

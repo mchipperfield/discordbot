@@ -103,7 +103,8 @@ func main() {
 	session.AddHandler(listen(*nxg, dcaService.GetSound("hey_listen.dca")))
 	session.AddHandler(Blondie(*nxg))
 	session.AddHandler(americanSpellingPolice(spellings))
-	session.AddHandler(GiftCodeCommandHandler(*playerIDFile, *giftCodeChannelID))
+	ks := NewKingShot(*playerIDFile)
+	session.AddHandler(ks.GiftCodeCommandHandler(*giftCodeChannelID))
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
 

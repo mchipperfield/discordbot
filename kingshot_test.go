@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -142,37 +145,64 @@ func TestEncodePayload(t *testing.T) {
 	})
 }
 
-// TestProcessNewCodeAlreadyActive checks the early-return paths in processNewCode.
-func TestProcessNewCodeAlreadyActive(t *testing.T) {
-	// Reset global state.
-	ActiveCodes = []string{"EXISTINGCODE"}
-	ExpiredCodes = []string{"EXPIREDCODE"}
-	defer func() {
-		ActiveCodes = []string{}
-		ExpiredCodes = nil
-	}()
-
-	t.Run("returns message when code already active", func(t *testing.T) {
-		result := processNewCode("dummy_file.csv", "EXISTINGCODE")
+// TestKingShot_processNewCode covers the early-return paths that require no
+// network calls, using an isolated KingShot instance per test.
+func TestKingShot_processNewCode(t *testing.T) {
+	t.Run("already active", func(t *testing.T) {
+		ks := &KingShot{activeCodes: []string{"EXISTINGCODE"}}
+		result := ks.processNewCode("EXISTINGCODE")
 		if !strings.Contains(result, "already active") {
-			t.Errorf("expected 'already active' in result, got: %q", result)
+			t.Errorf("expected 'already active', got: %q", result)
 		}
 	})
 
-	t.Run("returns message when code already expired", func(t *testing.T) {
-		result := processNewCode("dummy_file.csv", "EXPIREDCODE")
+	t.Run("already expired", func(t *testing.T) {
+		ks := &KingShot{expiredCodes: []string{"EXPIREDCODE"}}
+		result := ks.processNewCode("EXPIREDCODE")
 		if !strings.Contains(result, "expired") {
-			t.Errorf("expected 'expired' in result, got: %q", result)
+			t.Errorf("expected 'expired', got: %q", result)
 		}
 	})
 
-	t.Run("returns error when player file missing", func(t *testing.T) {
-		ActiveCodes = []string{}
-		result := processNewCode("/nonexistent/path/players.csv", "NEWCODE")
+	t.Run("player file missing", func(t *testing.T) {
+		ks := &KingShot{playerIDFile: "/nonexistent/path/players.csv"}
+		result := ks.processNewCode("NEWCODE")
 		if !strings.Contains(result, "failed to open player file") {
-			t.Errorf("expected file open error in result, got: %q", result)
+			t.Errorf("expected file open error, got: %q", result)
 		}
 	})
+
+	t.Run("empty player file adds code to active list", func(t *testing.T) {
+		f, err := os.CreateTemp(t.TempDir(), "players-*.csv")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+
+		ks := &KingShot{playerIDFile: f.Name()}
+		result := ks.processNewCode("FRESHCODE")
+		if !strings.Contains(result, "no registered players") {
+			t.Errorf("expected 'no registered players', got: %q", result)
+		}
+		if !slices.Contains(ks.activeCodes, "FRESHCODE") {
+			t.Error("expected FRESHCODE to be added to activeCodes")
+		}
+	})
+}
+
+// TestKingShot_concurrentAccess runs concurrent processNewCode calls so the
+// race detector (-race) can catch any unsynchronised access to the shared slices.
+func TestKingShot_concurrentAccess(t *testing.T) {
+	ks := &KingShot{playerIDFile: "/nonexistent/path/players.csv"}
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			ks.processNewCode(fmt.Sprintf("CODE%d", n))
+		}(i)
+	}
+	wg.Wait()
 }
 
 // isHex returns true if s contains only hex characters.
