@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/bwmarrin/discordgo"
 )
 
 // TestErrCodeUnmarshalJSON verifies that ErrCode correctly deserialises both
@@ -465,6 +467,64 @@ func TestFormatRedemptionReport(t *testing.T) {
 			t.Errorf("report missing %q:\n%s", want, got)
 		}
 	}
+}
+
+// --- Step 6 tests ------------------------------------------------------------
+
+// TestKingShot_GiftCodeCommands verifies that the command list contains exactly
+// the /register and /code commands with required options.
+func TestKingShot_GiftCodeCommands(t *testing.T) {
+	ks := NewKingShot("players.csv")
+	cmds := ks.GiftCodeCommands()
+
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands, got %d", len(cmds))
+	}
+
+	names := map[string]bool{}
+	for _, c := range cmds {
+		names[c.Name] = true
+		if len(c.Options) == 0 {
+			t.Errorf("command %q has no options", c.Name)
+		}
+	}
+
+	for _, want := range []string{"register", "code"} {
+		if !names[want] {
+			t.Errorf("expected command %q, not found in %v", want, names)
+		}
+	}
+}
+
+// TestKingShot_InteractionHandler_IgnoresNonAppCommand verifies that the
+// interaction handler silently ignores non-ApplicationCommand interactions.
+func TestKingShot_InteractionHandler_IgnoresNonAppCommand(t *testing.T) {
+	ks := NewKingShot("players.csv")
+	h := ks.InteractionHandler()
+
+	// Should not panic — just return early.
+	h(nil, &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type: discordgo.InteractionMessageComponent,
+		},
+	})
+}
+
+// TestKingShot_InteractionHandler_IgnoresUnknownCommand verifies that the
+// interaction handler silently ignores unrecognised slash command names.
+func TestKingShot_InteractionHandler_IgnoresUnknownCommand(t *testing.T) {
+	ks := NewKingShot("players.csv")
+	h := ks.InteractionHandler()
+
+	// Should not panic — unknown command is a no-op.
+	h(nil, &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type: discordgo.InteractionApplicationCommand,
+			Data: discordgo.ApplicationCommandInteractionData{
+				Name: "unknowncommand",
+			},
+		},
+	})
 }
 
 // TestChunkMessage verifies that long messages are split correctly.

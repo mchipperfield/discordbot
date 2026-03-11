@@ -110,7 +110,8 @@ func main() {
 	session.AddHandler(onMessage(*nxg, Blondie()))
 	session.AddHandler(onAnyMessage(americanSpellingPolice(spellings)))
 	ks := NewKingShot(*playerIDFile)
-	session.AddHandler(ks.GiftCodeCommandHandler(*giftCodeChannelID))
+	session.AddHandler(ks.InteractionHandler())
+	session.AddHandler(ks.MessageHandler(*giftCodeChannelID))
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
 
@@ -127,11 +128,19 @@ func main() {
 			}
 		}
 
-		// Register new commands.
+		// Register global commands.
 		for _, v := range commands {
 			_, err := s.ApplicationCommandCreate(s.State.User.ID, "", v)
 			if err != nil {
 				logger.Info("cannot create command", "command", v.Name, "error", err)
+			}
+		}
+
+		// Register NXG guild commands.
+		for _, v := range ks.GiftCodeCommands() {
+			_, err := s.ApplicationCommandCreate(s.State.User.ID, *nxg, v)
+			if err != nil {
+				logger.Error("cannot create command", "command", v.Name, "error", err)
 			}
 		}
 	})

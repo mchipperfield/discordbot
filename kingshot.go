@@ -84,57 +84,50 @@ func NewKingShot(playerIDFile string) *KingShot {
 
 // --- Discord handler wiring ---------------------------------------------------
 
-// GiftCodeCommandHandler returns a Ready handler that registers the /register
-// and /code slash commands and wires up the supporting message and interaction
-// handlers for the NXG guild.
-func (ks *KingShot) GiftCodeCommandHandler(giftCodeChannelID string) func(s *discordgo.Session, r *discordgo.Ready) {
-	return func(s *discordgo.Session, r *discordgo.Ready) {
-		slog.Info("Registering gift code commands and handlers")
-		commands := []*discordgo.ApplicationCommand{
-			{
-				Name:        "register",
-				Description: "Register your KingShot player ID",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type:        discordgo.ApplicationCommandOptionString,
-						Name:        "player-id",
-						Description: "Your KingShot player ID",
-						Required:    true,
-					},
+// GiftCodeCommands returns the slash command definitions for the KingShot gift
+// code system. Register these once in the Ready handler for the NXG guild.
+func (ks *KingShot) GiftCodeCommands() []*discordgo.ApplicationCommand {
+	return []*discordgo.ApplicationCommand{
+		{
+			Name:        "register",
+			Description: "Register your KingShot player ID",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "player-id",
+					Description: "Your KingShot player ID",
+					Required:    true,
 				},
 			},
-			{
-				Name:        "code",
-				Description: "Adds a new gift code for redemption.",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type:        discordgo.ApplicationCommandOptionString,
-						Name:        "code",
-						Description: "The gift code to add.",
-						Required:    true,
-					},
+		},
+		{
+			Name:        "code",
+			Description: "Adds a new gift code for redemption.",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "code",
+					Description: "The gift code to add.",
+					Required:    true,
 				},
 			},
-		}
+		},
+	}
+}
 
-		for _, v := range commands {
-			_, err := s.ApplicationCommandCreate(s.State.User.ID, ServerNXG, v)
-			if err != nil {
-				slog.Error("cannot create command", "command", v.Name, "error", err)
-			}
+// InteractionHandler returns a handler that dispatches /register and /code
+// interactions. Register this once at startup via session.AddHandler.
+func (ks *KingShot) InteractionHandler() func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		if i.Type != discordgo.InteractionApplicationCommand {
+			return
 		}
-		s.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-			if i.Type != discordgo.InteractionApplicationCommand {
-				return
-			}
-			switch i.ApplicationCommandData().Name {
-			case "register":
-				ks.registerPlayer(s, i)
-			case "code":
-				ks.addCode(s, i)
-			}
-		})
-		s.AddHandler(ks.messageHandler(giftCodeChannelID))
+		switch i.ApplicationCommandData().Name {
+		case "register":
+			ks.registerPlayer(s, i)
+		case "code":
+			ks.addCode(s, i)
+		}
 	}
 }
 
@@ -219,7 +212,9 @@ func (ks *KingShot) addCode(s *discordgo.Session, i *discordgo.InteractionCreate
 	}
 }
 
-func (ks *KingShot) messageHandler(channelID string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+// MessageHandler returns a handler that watches channelID for bot-posted gift
+// codes and triggers automatic redemption. Register once at startup.
+func (ks *KingShot) MessageHandler(channelID string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
 	codeRegex := regexp.MustCompile(`Gift Code: ([A-Z0-9]+)`)
 
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
