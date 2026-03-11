@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/mchipperfield/discordbot/ai"
@@ -58,29 +57,8 @@ func wakeUp(serverId string, opus [][]byte) func(s *discordgo.Session, m *discor
 		if !isTired(m.Content) {
 			return
 		}
-		guild, err := s.State.Guild(m.GuildID)
-		if err != nil {
-			slog.Info("failed to get guild", "id", m.GuildID, "error", err)
-			return
-		}
-		for _, vs := range guild.VoiceStates {
-			if vs.UserID == m.Author.ID {
-				vc, err := s.ChannelVoiceJoin(m.GuildID, vs.ChannelID, false, false)
-				if err != nil {
-					slog.Info("failed to join voice channel", "error", err, "id", vs.ChannelID)
-				}
-				if err := vc.Speaking(true); err != nil {
-					slog.Info("failed to start speaking", "error", err)
-				}
-				time.Sleep(250 * time.Millisecond)
-				for _, buf := range opus {
-					vc.OpusSend <- buf
-				}
-				if err := vc.Speaking(false); err != nil {
-					slog.Info("failed to stop speaking", "error", err)
-				}
-				vc.Disconnect()
-			}
+		if err := playAudioToUser(s, m.GuildID, m.Author.ID, opus); err != nil {
+			slog.Info("could not play wake-up audio", "error", err, "user", m.Author.ID)
 		}
 	}
 }
@@ -154,29 +132,8 @@ func listen(serverId string, opus [][]byte) func(s *discordgo.Session, m *discor
 		if !isListen(m.Content) {
 			return
 		}
-		guild, err := s.State.Guild(m.GuildID)
-		if err != nil {
-			slog.Info("failed to get guild", "id", m.GuildID, "error", err)
-			return
-		}
-		for _, vs := range guild.VoiceStates {
-			if vs.UserID == m.Author.ID {
-				vc, err := s.ChannelVoiceJoin(m.GuildID, vs.ChannelID, false, false)
-				if err != nil {
-					slog.Info("failed to join voice channel", "error", err, "id", vs.ChannelID)
-				}
-				if err := vc.Speaking(true); err != nil {
-					slog.Info("failed to start speaking", "error", err)
-				}
-				time.Sleep(250 * time.Millisecond)
-				for _, buf := range opus {
-					vc.OpusSend <- buf
-				}
-				if err := vc.Speaking(false); err != nil {
-					slog.Info("failed to stop speaking", "error", err)
-				}
-				vc.Disconnect()
-			}
+		if err := playAudioToUser(s, m.GuildID, m.Author.ID, opus); err != nil {
+			slog.Info("could not play listen audio", "error", err, "user", m.Author.ID)
 		}
 	}
 }
