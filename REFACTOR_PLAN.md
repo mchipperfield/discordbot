@@ -28,11 +28,11 @@ Every step follows the same discipline: **write tests first, then change the cod
 |---|---|---|
 | 1 — Introduce `KingShot` struct | ✅ Done | `fd07611` |
 | 2 — Extract pure business logic from `processNewCode` | ✅ Done | `b066266` |
-| 3 — Extract trigger predicates | 🔲 Next | — |
-| 4 — Eliminate voice channel duplication | 🔲 Pending | — |
-| 5 — Guard-clause middleware | 🔲 Pending | — |
-| 6 — Fix `GiftCodeCommandHandler` Ready anti-pattern | 🔲 Pending | — |
-| 7 — Split into per-server packages | 🔲 Pending | — |
+| 3 — Extract trigger predicates | ✅ Done | `1fd87ee` |
+| 4 — Eliminate voice channel duplication | ✅ Done | `089b871` |
+| 5 — Guard-clause middleware | ✅ Done | `06bedac` |
+| 6 — Fix `GiftCodeCommandHandler` Ready anti-pattern | ✅ Done | `9dcc6ff` |
+| 7 — Split into per-server packages | ✅ Done | `6c3cc4d` |
 
 ---
 
@@ -74,7 +74,7 @@ Every step follows the same discipline: **write tests first, then change the cod
 
 ---
 
-## 🔲 Step 3 — Extract trigger predicates from message handlers
+## ✅ Step 3 — Extract trigger predicates from message handlers *(done)*
 
 ### Problem
 Every handler buries its "should I fire?" logic inline, entangled with Discord session calls:
@@ -115,7 +115,7 @@ New `handler_predicates.go`, new `handler_predicates_test.go`, `handlers.go`
 
 ---
 
-## 🔲 Step 4 — Eliminate voice channel duplication
+## ✅ Step 4 — Eliminate voice channel duplication *(done)*
 
 ### Problem
 `wakeUp` and `listen` contain byte-for-byte identical 24-line blocks. There is also a latent nil-pointer panic: if `s.State.Guild()` returns an error the code logs it but still iterates `guild.VoiceStates` on a nil pointer.
@@ -162,7 +162,7 @@ New `voice.go`, new `voice_test.go`, `handlers.go`
 
 ---
 
-## 🔲 Step 5 — Guard-clause middleware
+## ✅ Step 5 — Guard-clause middleware *(done)*
 
 ### Problem
 This block appears verbatim in all six message handlers (36 lines total):
@@ -217,7 +217,7 @@ New `middleware.go`, new `middleware_test.go`, `handlers.go`, `main.go`
 
 ---
 
-## 🔲 Step 6 — Fix the `GiftCodeCommandHandler` Ready anti-pattern
+## ✅ Step 6 — Fix the `GiftCodeCommandHandler` Ready anti-pattern *(done)*
 
 ### Problem
 `GiftCodeCommandHandler` is a Ready handler that, on *every reconnect*, both registers slash commands **and** calls `s.AddHandler(...)` inside the running session. On reconnect, duplicate handlers accumulate silently and fire multiple times per event.
@@ -248,7 +248,7 @@ The cleanup logic in `main.go`'s Ready handler only touches global-scope command
 
 ---
 
-## 🔲 Step 7 — Split into per-server packages
+## ✅ Step 7 — Split into per-server packages *(done)*
 
 ### Problem
 All handler logic lives in the `main` package. There is no visible boundary between SD and NXG features. Adding a handler to one server requires opening the same file as the other server's handlers.
@@ -296,12 +296,16 @@ func (ks *KingShot) Register(s *discordgo.Session, giftCodeChannelID string)
 
 `main.go` knows nothing about handler implementation — it only calls `Register`.
 
-### Tests to write first
-- Predicate and pure-logic tests move into each sub-package's `_test.go` files
-- The `Register` functions themselves are wiring — tested at integration level with `t.Skip` guards for live Discord
+### What was done
+- `middleware/` — exported `OnMessage` / `OnAnyMessage`; tests moved here
+- `voice/` — exported `PlayAudioToUser`; tests moved here
+- `server/sd/` — SD handlers (getQuote, hungry, wakeUp), predicates, `Register()`
+- `server/nxg/` — NXG handlers (kit, blondie, listen, askGemini), predicates, `Register()`
+- `kingshot/` — KingShot service moved here, `Register()` entry point added
+- `main.go` — wiring only: parse flags, build deps, call `sd.Register`, `nxg.Register`, `ks.Register`
 
 ### Files touched
-All files — this is the final structural step. Must be done last.
+All files — final structural step.
 
 ---
 
