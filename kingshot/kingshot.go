@@ -76,7 +76,7 @@ func NewKingShot(playerIDFile string) *KingShot {
 		redeemURL:    defaultRedeemURL,
 		client: &http.Client{
 			Transport: &transport{
-				limiter: rate.NewLimiter(rate.Every(1*time.Second), 1),
+				limiter: rate.NewLimiter(rate.Every(2*time.Second), 1),
 			},
 		},
 	}
