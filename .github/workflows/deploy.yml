@@ -85,10 +85,12 @@ jobs:
       - name: Restart application on VM
         run: |
           ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} '
-          echo "Connected to VM. Moving binary and restarting service..."
+          echo "Connected to VM. Deploying new binary..."
           sudo systemctl stop goafbot.service
-          sudo mv ~/discordbot.tmp ${{ secrets.VM_DEST_PATH }}
-          sudo chmod +x ${{ secrets.VM_DEST_PATH }}
+          pkill -f discordbot || true
+          sudo rm -f ${{ secrets.VM_DEST_PATH }}/discordbot
+          sudo mv ~/discordbot.tmp ${{ secrets.VM_DEST_PATH }}/discordbot
+          sudo chmod +x ${{ secrets.VM_DEST_PATH }}/discordbot
           sudo systemctl start goafbot.service
           echo "Deployment complete."
           '
