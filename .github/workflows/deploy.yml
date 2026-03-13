@@ -86,9 +86,9 @@ jobs:
         run: |
           ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} '
           echo "Placing new binary..."
-          sudo rm -f ${{ secrets.VM_DEST_PATH }}/discordBot
-          sudo mv ~/discordbot.tmp ${{ secrets.VM_DEST_PATH }}/discordBot
-          sudo chmod +x ${{ secrets.VM_DEST_PATH }}/discordBot
+          sudo rm -f ${{ secrets.VM_DEST_PATH }}/discordbot
+          sudo mv ~/discordbot.tmp ${{ secrets.VM_DEST_PATH }}/discordbot
+          sudo chmod +x ${{ secrets.VM_DEST_PATH }}/discordbot
           echo "Restarting service..."
           sudo systemctl restart goafbot.service
           echo "Deployment complete."
