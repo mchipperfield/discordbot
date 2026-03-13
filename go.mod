@@ -3,7 +3,7 @@ module github.com/mchipperfield/discordbot
 go 1.24.0
 
 require (
-	github.com/bwmarrin/discordgo v0.28.1
+	github.com/bwmarrin/discordgo v0.29.0
 	github.com/google/generative-ai-go v0.20.1
 	github.com/mchipperfield/gocore v0.0.0-20250613192131-2760608b5d42
 	github.com/peterbourgon/ff v1.7.1
