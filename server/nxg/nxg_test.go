@@ -68,6 +68,27 @@ func TestIsListen(t *testing.T) {
 	}
 }
 
+func TestIsDad(t *testing.T) {
+	cases := []struct {
+		content string
+		want    bool
+	}{
+		{"dad", true},
+		{"DAD", true},
+		{"hey dad!", true},
+		{"my dad is cool", true},
+		{"dads", false},      // word boundary — should NOT match
+		{"stepdad", false},   // word boundary — should NOT match
+		{"dadjoke", false},   // word boundary — should NOT match
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isDad(c.content); got != c.want {
+			t.Errorf("isDad(%q) = %v, want %v", c.content, got, c.want)
+		}
+	}
+}
+
 // --- Register smoke test -----------------------------------------------------
 
 func TestRegister_NoHangs(t *testing.T) {

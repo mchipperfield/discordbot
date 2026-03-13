@@ -18,6 +18,7 @@ var (
 	kitRegex      = regexp.MustCompile(`\bkit\b`)
 	fullSendRegex = regexp.MustCompile(`\bfull send\b`)
 	listenRegex   = regexp.MustCompile(`\blisten\b`)
+	dadRegex      = regexp.MustCompile(`\bdad\b`)
 )
 
 // Register wires all NXG server handlers onto s for the given guildID.
@@ -27,6 +28,7 @@ func Register(s *discordgo.Session, guildID string, listenSound [][]byte, aiSvc 
 	s.AddHandler(middleware.OnMessage(guildID, kit()))
 	s.AddHandler(middleware.OnMessage(guildID, blondie()))
 	s.AddHandler(middleware.OnMessage(guildID, listenAudio(listenSound)))
+	s.AddHandler(middleware.OnMessage(guildID, dadJoke()))
 	if aiSvc != nil {
 		s.AddHandler(askGemini(aiSvc))
 	}
@@ -91,6 +93,40 @@ func listenAudio(opus [][]byte) func(*discordgo.Session, *discordgo.MessageCreat
 	}
 }
 
+type dadJokeResponse struct {
+	Joke string `json:"joke"`
+}
+
+func dadJoke() func(*discordgo.Session, *discordgo.MessageCreate) {
+	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
+		if !isDad(m.Content) {
+			return
+		}
+		req, _ := http.NewRequest("GET", "https://icanhazdadjoke.com/", nil)
+		req.Header.Set("Accept", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			slog.Info("failed to fetch dad joke", "error", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			slog.Info("failed to read dad joke response", "error", err)
+			return
+		}
+		var joke dadJokeResponse
+		if err := json.Unmarshal(body, &joke); err != nil {
+			slog.Info("failed to unmarshal dad joke", "error", err)
+			return
+		}
+		if _, err := s.ChannelMessageSend(m.ChannelID, joke.Joke); err != nil {
+			slog.Info("failed to send dad joke", "error", err, "channel", m.ChannelID)
+		}
+	}
+}
+
 func askGemini(service *ai.Service) func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		if i.Type != discordgo.InteractionApplicationCommand {
@@ -131,4 +167,8 @@ func isFullSend(content string) bool {
 
 func isListen(content string) bool {
 	return listenRegex.MatchString(strings.ToLower(content))
+}
+
+func isDad(content string) bool {
+	return dadRegex.MatchString(strings.ToLower(content))
 }
