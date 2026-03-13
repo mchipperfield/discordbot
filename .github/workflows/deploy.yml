@@ -86,8 +86,9 @@ jobs:
         run: |
           ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} '
           echo "Connected to VM. Moving binary and restarting service..."
+          sudo systemctl stop goafbot.service
           sudo mv ~/discordbot.tmp ${{ secrets.VM_DEST_PATH }}
           sudo chmod +x ${{ secrets.VM_DEST_PATH }}
-          sudo systemctl restart goafbot.service
+          sudo systemctl start goafbot.service
           echo "Deployment complete."
           '
