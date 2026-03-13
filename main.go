@@ -1,36 +1,26 @@
 package main
 
 import (
+	"bufio"
 	"flag"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
-
-	"github.com/mchipperfield/discordbot/dca"
-	"github.com/peterbourgon/ff"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/mchipperfield/discordbot/ai"
+	"github.com/mchipperfield/discordbot/dca"
+	"github.com/mchipperfield/discordbot/kingshot"
+	"github.com/mchipperfield/discordbot/middleware"
+	"github.com/mchipperfield/discordbot/server/nxg"
+	"github.com/mchipperfield/discordbot/server/sd"
+	"github.com/peterbourgon/ff"
 )
 
-var quotes = []string{
-	"honestly",
-	"sumptuous",
-	"in my tenure",
-	"the thiinnng is",
-	"#cheers",
-	"You know where it is",
-	"it's not too bad actually",
-	"i love the chocolate starfish",
-	"i'm always prepared!",
-	"Up the Spurs!",
-	"SEND OUT!!!",
-	"You are ENOUGH!",
-	"I, do NOT fail!",
-}
-
-var commands = []*discordgo.ApplicationCommand{
+var askCommand = []*discordgo.ApplicationCommand{
 	{
 		Name:        "ask",
 		Description: "Ask the bot a question",
@@ -45,7 +35,8 @@ var commands = []*discordgo.ApplicationCommand{
 	},
 }
 
-// Server2985 is the guild id for the SD server.
+// Server2985 is the guild ID for the SD server.
+// ServerNXG is the guild ID for the NXG gaming server.
 const (
 	Server2985 = "1339671620880699433"
 	ServerNXG  = "1423406563850190850"
@@ -58,7 +49,7 @@ func main() {
 	var (
 		token             = fs.String("bot_token", "", "bot authentication token")
 		serverId          = fs.String("server_id", Server2985, "server to listen on")
-		nxg               = fs.String("nxg_server_id", ServerNXG, "NXG server id")
+		nxgID             = fs.String("nxg_server_id", ServerNXG, "NXG server id")
 		spellingURL       = fs.String("spelling_url", "https://gist.githubusercontent.com/ZekNikZ/5e7dd531df99be4408bd768ded36aad9/raw/c0ecc900022d60d54accb3770f2e737dcba738ad/british-american-words.txt", "URL to uk-us dictionary file")
 		geminiAPIKey      = fs.String("gemini_api_key", "", "API key for Gemini AI service")
 		playerIDFile      = fs.String("player_id_file", "player_ids.csv", "File to store player IDs")
@@ -67,6 +58,8 @@ func main() {
 	if err := ff.Parse(fs,
 		os.Args[1:],
 		ff.WithEnvVarNoPrefix(),
+		ff.WithConfigFile(".env"),
+		ff.WithConfigFileParser(dotEnvParser),
 	); err != nil {
 		logger.Log("failed to parse flags", "error", err)
 		os.Exit(1)
@@ -77,10 +70,10 @@ func main() {
 		logger.Info("failed to load spellings", "error", err)
 		os.Exit(1)
 	}
+
 	aiService, err := ai.NewService(*geminiAPIKey)
 	if err != nil {
-		logger.Info("failed to create ai service", "error", err)
-		os.Exit(1)
+		logger.Info("no AI service available, /ask command will be disabled", "reason", err)
 	}
 
 	dcaService, err := dca.NewService(logger)
@@ -95,36 +88,42 @@ func main() {
 		os.Exit(1)
 	}
 
-	session.AddHandler(AskGemini(aiService))
-	session.AddHandler(hungry(*serverId))
-	session.AddHandler(getQuote(*serverId, quotes))
-	session.AddHandler(wakeUp(*serverId, dcaService.GetSound("wake_up.dca")))
-	session.AddHandler(Kit(*nxg))
-	session.AddHandler(listen(*nxg, dcaService.GetSound("hey_listen.dca")))
-	session.AddHandler(Blondie(*nxg))
-	session.AddHandler(americanSpellingPolice(spellings))
-	session.AddHandler(GiftCodeCommandHandler(*playerIDFile, *giftCodeChannelID))
+	ks := kingshot.NewKingShot(*playerIDFile)
+
+	// Register all handlers once at startup — never inside a Ready callback.
+	sd.Register(session, *serverId, dcaService.GetSound("wake_up.dca"))
+	nxg.Register(session, *nxgID, dcaService.GetSound("hey_listen.dca"), aiService)
+	ks.Register(session, *giftCodeChannelID)
+	session.AddHandler(middleware.OnAnyMessage(americanSpellingPolice(spellings)))
+
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
 
 		// Clean up old commands to ensure a fresh state.
-		existingCommands, err := s.ApplicationCommands(s.State.User.ID, *nxg)
-		if err != nil {
-			logger.Info("could not fetch existing commands", "error", err)
-		} else {
-			for _, v := range existingCommands {
-				err := s.ApplicationCommandDelete(s.State.User.ID, "", v.ID)
-				if err != nil {
+		for _, guildID := range []string{"", *nxgID} {
+			existing, err := s.ApplicationCommands(s.State.User.ID, guildID)
+			if err != nil {
+				logger.Info("could not fetch existing commands", "guild", guildID, "error", err)
+				continue
+			}
+			for _, v := range existing {
+				if err := s.ApplicationCommandDelete(s.State.User.ID, guildID, v.ID); err != nil {
 					logger.Info("cannot delete command", "command", v.Name, "error", err)
 				}
 			}
 		}
 
-		// Register new commands.
-		for _, v := range commands {
-			_, err := s.ApplicationCommandCreate(s.State.User.ID, "", v)
-			if err != nil {
+		// Register global commands.
+		for _, v := range askCommand {
+			if _, err := s.ApplicationCommandCreate(s.State.User.ID, "", v); err != nil {
 				logger.Info("cannot create command", "command", v.Name, "error", err)
+			}
+		}
+
+		// Register NXG guild commands.
+		for _, v := range ks.GiftCodeCommands() {
+			if _, err := s.ApplicationCommandCreate(s.State.User.ID, *nxgID, v); err != nil {
+				logger.Error("cannot create command", "command", v.Name, "error", err)
 			}
 		}
 	})
@@ -140,7 +139,6 @@ func main() {
 	sig := <-stopChan
 
 	logger.Info("signal received", "signal", sig)
-
 }
 
 type logger struct {
@@ -150,4 +148,26 @@ type logger struct {
 func (l logger) Log(msg string, keyvals ...any) error {
 	l.Logger.Info(msg, keyvals...)
 	return nil
+}
+
+// dotEnvParser reads a .env file in KEY=VALUE format (one per line).
+// Lines starting with # and blank lines are ignored.
+func dotEnvParser(r io.Reader, set func(name, value string) error) error {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(parts[0]))
+		value := strings.TrimSpace(parts[1])
+		if err := set(name, value); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }

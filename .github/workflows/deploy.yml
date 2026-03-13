@@ -35,20 +35,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Set up the Go environment (e.g., Go 1.22)
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
 
-      # Step 3: Build the Go binary for Linux
-      # - "GOOS=linux" targets the Linux operating system
-      # - "GOARCH=amd64" targets 64-bit architecture (most common for VMs)
-      # - "-o my-app-binary" sets the output file name
-      # - "./..." builds all packages in the current directory and subdirectories
-      #    (Adjust this to your main package, e.g., "./cmd/server")
       - name: Build Go Binary
-        run: GOOS=linux GOARCH=amd64 go build -v -o discordbot ./...
+        run: GOOS=linux GOARCH=amd64 go build -v -o discordbot .
 
       # Step 4: Upload the built binary as an artifact
       # This makes the "my-app-binary" file available to other jobs (like 'deploy')
@@ -76,29 +69,19 @@ jobs:
       - name: Make binary executable
         run: chmod +x discordbot
 
-      # Step 3: Set up the SSH key
-      # This step securely adds your private key to the runner's SSH agent
-      # and adds your VM's host key to known_hosts to prevent interactive prompts.
-      - name: Set up SSH
-        run: |
-          mkdir -p ~/.ssh/
-          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+      # Step 3: Load SSH key into agent
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VM_SSH_KEY }}
 
-      # Step 4: Copy the binary to the VM using scp
-      # This copies the "./my-app-binary" file from the runner
-      # to the VM_DEST_PATH you defined in your secrets.
+      # Step 4: Add VM host key to known_hosts
+      - name: Add VM to known hosts
+        run: ssh-keyscan -T 10 -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+
       - name: Copy binary to VM via scp
         run: |
           scp -v ./discordbot ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:${{ secrets.VM_DEST_PATH }}
 
-      # Step 5: Run commands on the VM via ssh
-      # This is where you restart your application.
-      # The example below assumes you are running your app with systemd.
-      #
-      # !! IMPORTANT !!
-      # You MUST customize the 'ssh' command below to fit your setup.
       - name: Restart application on VM
         run: |
           ssh -v ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} '

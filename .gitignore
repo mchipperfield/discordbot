@@ -33,3 +33,5 @@ go.work.sum
 # gcloud files
 .gcloudignore
 app.yaml
+.history/
+discordbot

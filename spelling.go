@@ -50,21 +50,22 @@ func cleanWord(word string) string {
 	return nonAlphaNumeric.ReplaceAllString(word, "")
 }
 
-func americanSpellingPolice(americanToEnglish map[string]string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+// buildSpellingSuggestions returns a list of formatted suggestion strings for any
+// American spellings found in the message, keyed against the americanToEnglish map.
+func buildSpellingSuggestions(message string, americanToEnglish map[string]string) []string {
+	var suggestions []string
+	for _, word := range strings.Fields(message) {
+		cleanedWord := cleanWord(strings.ToLower(word))
+		if britishSpelling, ok := americanToEnglish[cleanedWord]; ok {
+			suggestions = append(suggestions, fmt.Sprintf("`%s` -> `%s`", cleanedWord, britishSpelling))
+		}
+	}
+	return suggestions
+}
+
+func americanSpellingPolice(americanToEnglish map[string]string) func(*discordgo.Session, *discordgo.MessageCreate) {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if m.Author.ID == s.State.User.ID {
-			return
-		}
-
-		var suggestions []string
-		words := strings.Fields(m.Content)
-		for _, word := range words {
-			cleanedWord := cleanWord(strings.ToLower(word))
-			if britishSpelling, ok := americanToEnglish[cleanedWord]; ok {
-				suggestions = append(suggestions, fmt.Sprintf("`%s` -> `%s`", cleanedWord, britishSpelling))
-			}
-		}
-
+		suggestions := buildSpellingSuggestions(m.Content, americanToEnglish)
 		if len(suggestions) > 0 {
 			reply := fmt.Sprintf("Did you mean: %s?", strings.Join(suggestions, ", "))
 			_, err := s.ChannelMessageSendReply(m.ChannelID, reply, m.Reference())
