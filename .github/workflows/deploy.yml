@@ -80,23 +80,14 @@ jobs:
 
       - name: Copy binary to VM via scp
         run: |
-          scp -v ./discordbot ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:${{ secrets.VM_DEST_PATH }}
+          scp -v ./discordbot ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:~/discordbot.tmp
 
       - name: Restart application on VM
         run: |
-          ssh -v ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} '
-          echo "Connected to VM. Restarting service..."
-          
-          # --- EXAMPLE COMMANDS ---
-          # These commands are just examples. You must replace them
-          # with the actual commands needed to restart your service.
-
-          # Example 1: If you run your app as a systemd service
-           sudo systemctl restart goafbot.service
-
-          # Example 2: If you need to find and kill the old process
-          # pkill my-app-binary || true
-          # nohup ${{ secrets.VM_DEST_PATH }} > app.log 2>&1 &
-          
+          ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} '
+          echo "Connected to VM. Moving binary and restarting service..."
+          sudo mv ~/discordbot.tmp ${{ secrets.VM_DEST_PATH }}
+          sudo chmod +x ${{ secrets.VM_DEST_PATH }}
+          sudo systemctl restart goafbot.service
           echo "Deployment complete."
           '
