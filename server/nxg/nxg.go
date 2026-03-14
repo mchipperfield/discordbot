@@ -16,9 +16,7 @@ import (
 )
 
 // knownUsers maps Discord user IDs to friendly names for use in handlers.
-var knownUsers = map[string]string{
-	"845223962052788224": "kinslayer",
-}
+var knownUsers = []string{"845223962052788224"} // Kinslayer discord ID
 
 var (
 	kitRegex      = regexp.MustCompile(`\bkit\b`)
@@ -175,8 +173,10 @@ func isListen(content string) bool {
 }
 
 func mentionsKnownUser(m *discordgo.MessageCreate) bool {
-	return slices.ContainsFunc(m.Mentions, func(u *discordgo.User) bool {
-		_, ok := knownUsers[u.ID]
-		return ok
-	})
+	for _, u := range m.Mentions {
+		if slices.Contains(knownUsers, u.ID) {
+			return true
+		}
+	}
+	return false
 }
