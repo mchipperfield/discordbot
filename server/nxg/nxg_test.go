@@ -68,23 +68,27 @@ func TestIsListen(t *testing.T) {
 	}
 }
 
-func TestIsDad(t *testing.T) {
+func TestMentionsKnownUser(t *testing.T) {
+	make := func(ids ...string) *discordgo.MessageCreate {
+		msg := &discordgo.MessageCreate{Message: &discordgo.Message{}}
+		for _, id := range ids {
+			msg.Mentions = append(msg.Mentions, &discordgo.User{ID: id})
+		}
+		return msg
+	}
+
 	cases := []struct {
-		content string
-		want    bool
+		msg  *discordgo.MessageCreate
+		want bool
 	}{
-		{"dad", true},
-		{"DAD", true},
-		{"hey dad!", true},
-		{"my dad is cool", true},
-		{"dads", false},      // word boundary — should NOT match
-		{"stepdad", false},   // word boundary — should NOT match
-		{"dadjoke", false},   // word boundary — should NOT match
-		{"", false},
+		{make("845223962052788224"), true},           // kinslayer mentioned
+		{make("845223962052788224", "999"), true},    // kinslayer + other
+		{make("999"), false},                         // unknown user
+		{make(), false},                              // no mentions
 	}
 	for _, c := range cases {
-		if got := isDad(c.content); got != c.want {
-			t.Errorf("isDad(%q) = %v, want %v", c.content, got, c.want)
+		if got := mentionsKnownUser(c.msg); got != c.want {
+			t.Errorf("mentionsKnownUser(%v mentions) = %v, want %v", len(c.msg.Mentions), got, c.want)
 		}
 	}
 }
