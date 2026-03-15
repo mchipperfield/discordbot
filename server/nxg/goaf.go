@@ -56,7 +56,7 @@ func NewGoafService(channelID, stateFile string) *GoafService {
 	return g
 }
 
-// Register wires the /goaf interaction handler onto s and starts the background ticker.
+// Register wires the /bear interaction handler onto s and starts the background ticker.
 // Must be called once at startup, never inside a Ready callback.
 func (g *GoafService) Register(s *discordgo.Session) {
 	g.send = func(channelID, msg string) {
@@ -73,29 +73,41 @@ func (g *GoafService) GoafCommands() []*discordgo.ApplicationCommand {
 	return []*discordgo.ApplicationCommand{
 		{
 			Name:        "bear",
-			Description: "Configure a bear alert",
+			Description: "Bear alert management",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
-					Type:        discordgo.ApplicationCommandOptionInteger,
-					Name:        "bear",
-					Description: "Which bear",
-					Required:    true,
-					Choices: []*discordgo.ApplicationCommandOptionChoice{
-						{Name: "1", Value: 1},
-						{Name: "2", Value: 2},
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "config",
+					Description: "Configure a bear alert",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionInteger,
+							Name:        "bear",
+							Description: "Which bear",
+							Required:    true,
+							Choices: []*discordgo.ApplicationCommandOptionChoice{
+								{Name: "1", Value: 1},
+								{Name: "2", Value: 2},
+							},
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "time",
+							Description: "Event date and time in UTC — e.g. 2026-03-15 19:00",
+							Required:    true,
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionInteger,
+							Name:        "alert_before",
+							Description: "How many minutes before the event to send the alert",
+							Required:    true,
+						},
 					},
 				},
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "time",
-					Description: "Event date and time in UTC — e.g. 2026-03-15 19:00",
-					Required:    true,
-				},
-				{
-					Type:        discordgo.ApplicationCommandOptionInteger,
-					Name:        "alert_before",
-					Description: "How many minutes before the event to send the alert",
-					Required:    true,
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "status",
+					Description: "Show time remaining until each bear alert",
 				},
 			},
 		},
@@ -113,31 +125,47 @@ func (g *GoafService) interactionHandler() func(*discordgo.Session, *discordgo.I
 			return
 		}
 
-		opts := i.ApplicationCommandData().Options
-		bear := int(opts[0].IntValue()) // enforced by Discord to be 1 or 2
-
-		refDate, eventTime, err := parseDateTime(opts[1].StringValue())
-		if err != nil {
-			goafRespond(s, i, fmt.Sprintf("Error: %v", err))
-			return
+		subCmd := i.ApplicationCommandData().Options[0]
+		switch subCmd.Name {
+		case "config":
+			g.handleConfig(s, i, subCmd.Options)
+		case "status":
+			g.handleStatus(s, i)
 		}
-
-		minutesBefore := int(opts[2].IntValue())
-		if minutesBefore <= 0 {
-			goafRespond(s, i, "Error: alert_before must be a positive number of minutes")
-			return
-		}
-
-		if err := g.configure(bear, refDate, eventTime, minutesBefore); err != nil {
-			goafRespond(s, i, fmt.Sprintf("Error: %v", err))
-			return
-		}
-
-		goafRespond(s, i, fmt.Sprintf(
-			"Bear %d configured: %s %s UTC, alerting %d minutes before. The 2-day cycle will be handled automatically.",
-			bear, refDate, eventTime, minutesBefore,
-		))
 	}
+}
+
+func (g *GoafService) handleConfig(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+	bear := int(opts[0].IntValue())
+
+	refDate, eventTime, err := parseDateTime(opts[1].StringValue())
+	if err != nil {
+		goafRespond(s, i, fmt.Sprintf("Error: %v", err))
+		return
+	}
+
+	minutesBefore := int(opts[2].IntValue())
+	if minutesBefore <= 0 {
+		goafRespond(s, i, "Error: alert_before must be a positive number of minutes")
+		return
+	}
+
+	if err := g.configure(bear, refDate, eventTime, minutesBefore); err != nil {
+		goafRespond(s, i, fmt.Sprintf("Error: %v", err))
+		return
+	}
+
+	goafRespond(s, i, fmt.Sprintf(
+		"Bear %d configured: %s %s UTC, alerting %d minutes before. The 2-day cycle will be handled automatically.",
+		bear, refDate, eventTime, minutesBefore,
+	))
+}
+
+func (g *GoafService) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	g.mu.Lock()
+	status := g.buildStatus(g.now())
+	g.mu.Unlock()
+	goafRespond(s, i, status)
 }
 
 // configure upserts the alert entry for the given bear.
@@ -150,7 +178,7 @@ func (g *GoafService) configure(bear int, refDate, eventTime string, minutesBefo
 			a.ReferenceDate = refDate
 			a.Time = eventTime
 			a.MinutesBefore = minutesBefore
-			a.LastAlertDate = "" // reset so the alert fires again on the next occurrence
+			a.LastAlertDate = ""
 			return g.saveState()
 		}
 	}
@@ -196,7 +224,6 @@ func (g *GoafService) tick(now time.Time) {
 			continue
 		}
 
-		// Anchor event time to today's UTC date.
 		eventToday := time.Date(now.Year(), now.Month(), now.Day(), eventT.Hour(), eventT.Minute(), 0, 0, time.UTC)
 		alertAt := eventToday.Add(-time.Duration(alert.MinutesBefore) * time.Minute)
 
@@ -216,6 +243,114 @@ func (g *GoafService) tick(now time.Time) {
 func (g *GoafService) sendAlert(alert *GoafAlert) {
 	msg := fmt.Sprintf("@everyone Bear %d is starting in %d minutes", alert.Bear, alert.MinutesBefore)
 	g.send(g.channelID, msg)
+}
+
+// --- status ------------------------------------------------------------------
+
+// buildStatus returns a human-readable status string for all bears.
+// Must be called with g.mu held.
+func (g *GoafService) buildStatus(now time.Time) string {
+	lines := make([]string, 2)
+	for idx, bearNum := range []int{1, 2} {
+		lines[idx] = fmt.Sprintf("Bear %d — %s", bearNum, g.bearStatusLine(g.alertFor(bearNum), now))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// bearStatusLine returns the status line for a single bear.
+func (g *GoafService) bearStatusLine(alert *GoafAlert, now time.Time) string {
+	if alert == nil {
+		return "not configured"
+	}
+
+	eventT, err := parseHHMM(alert.Time)
+	if err != nil {
+		return "invalid configuration"
+	}
+
+	today := now.Format("2006-01-02")
+	todayMidnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	// Find the next upcoming bear day (skips today if the event has already
+	// passed or the alert was already sent).
+	var nextDay time.Time
+	for d := 0; d <= 14; d++ {
+		candidate := todayMidnight.AddDate(0, 0, d)
+		dayStr := candidate.Format("2006-01-02")
+		if !isBearDay(dayStr, alert.ReferenceDate) {
+			continue
+		}
+		if d == 0 {
+			// Skip today if alert already sent or event already started.
+			eventToday := time.Date(now.Year(), now.Month(), now.Day(), eventT.Hour(), eventT.Minute(), 0, 0, time.UTC)
+			if alert.LastAlertDate == today || !now.Before(eventToday) {
+				continue
+			}
+		}
+		nextDay = candidate
+		break
+	}
+
+	if nextDay.IsZero() {
+		return "no upcoming event in the next 14 days"
+	}
+
+	eventTime := time.Date(nextDay.Year(), nextDay.Month(), nextDay.Day(), eventT.Hour(), eventT.Minute(), 0, 0, time.UTC)
+	alertAt := eventTime.Add(-time.Duration(alert.MinutesBefore) * time.Minute)
+
+	dateLabel := nextDay.Format("2006-01-02")
+	if nextDay.Format("2006-01-02") == today {
+		dateLabel = "today"
+	}
+
+	remaining := alertAt.Sub(now)
+	if remaining <= 0 {
+		// We're inside the alert window right now.
+		return fmt.Sprintf("alert firing now (%s, event %s UTC)", dateLabel, alert.Time)
+	}
+	return fmt.Sprintf("alert in %s (%s, event %s UTC)", formatDuration(remaining), dateLabel, alert.Time)
+}
+
+// alertFor returns the alert for the given bear number, or nil.
+// Callers inside tick/buildStatus must already hold g.mu; external callers (tests) do not.
+func (g *GoafService) alertFor(bear int) *GoafAlert {
+	for _, a := range g.state.Alerts {
+		if a.Bear == bear {
+			return a
+		}
+	}
+	return nil
+}
+
+// alertForLocked is a convenience wrapper that acquires the lock — used by tests.
+func (g *GoafService) alertForLocked(bear int) *GoafAlert {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.alertFor(bear)
+}
+
+// formatDuration formats a duration as a human-readable string like "2d 3h 45min".
+func formatDuration(d time.Duration) string {
+	d = d.Truncate(time.Minute)
+	if d < time.Minute {
+		return "< 1min"
+	}
+	total := int(d.Minutes())
+	days := total / (60 * 24)
+	hours := (total % (60 * 24)) / 60
+	mins := total % 60
+
+	var parts []string
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%dd", days))
+	}
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	if mins > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%dmin", mins))
+	}
+	return strings.Join(parts, " ")
 }
 
 // --- persistence -------------------------------------------------------------

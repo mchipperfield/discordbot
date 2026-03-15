@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,18 +16,6 @@ func newTestGoafService(t *testing.T) *GoafService {
 	t.Helper()
 	stateFile := filepath.Join(t.TempDir(), "goaf_state.json")
 	return NewGoafService("chan-test", stateFile)
-}
-
-// alertFor returns the alert for the given bear number, or nil if not found.
-func (g *GoafService) alertFor(bear int) *GoafAlert {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	for _, a := range g.state.Alerts {
-		if a.Bear == bear {
-			return a
-		}
-	}
-	return nil
 }
 
 func stubSend(t *testing.T, msgs *[]string) func(string, string) {
@@ -101,7 +90,7 @@ func TestGoafService_Configure_StoresAlert(t *testing.T) {
 	g := newTestGoafService(t)
 	mustConfigure(t, g, 1, "2026-03-15", "19:00", 10)
 
-	a := g.alertFor(1)
+	a := g.alertForLocked(1)
 	if a == nil {
 		t.Fatal("expected alert stored for bear 1")
 	}
@@ -373,7 +362,7 @@ func TestGoafService_Persistence_LoadsStateFromDisk(t *testing.T) {
 	mustConfigure(t, g1, 1, "2026-03-15", "19:00", 10)
 
 	g2 := NewGoafService("chan-test", stateFile)
-	a := g2.alertFor(1)
+	a := g2.alertForLocked(1)
 	if a == nil {
 		t.Fatal("expected alert to survive restart")
 	}
@@ -464,6 +453,134 @@ func TestGoafService_Persistence_StateFileIsValidJSON(t *testing.T) {
 	if len(state.Alerts) != 2 {
 		t.Errorf("expected 2 alerts in JSON, got %d", len(state.Alerts))
 	}
+}
+
+// --- formatDuration ----------------------------------------------------------
+
+func TestFormatDuration(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "< 1min"},
+		{30 * time.Second, "< 1min"},
+		{1 * time.Minute, "1min"},
+		{45 * time.Minute, "45min"},
+		{90 * time.Minute, "1h 30min"},
+		{3*time.Hour + 45*time.Minute, "3h 45min"},
+		{24 * time.Hour, "1d"},
+		{25 * time.Hour, "1d 1h"},
+		{2*24*time.Hour + 3*time.Hour + 45*time.Minute, "2d 3h 45min"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.want, func(t *testing.T) {
+			if got := formatDuration(c.d); got != c.want {
+				t.Errorf("formatDuration(%v) = %q, want %q", c.d, got, c.want)
+			}
+		})
+	}
+}
+
+// --- status ------------------------------------------------------------------
+
+func TestGoafService_Status_NotConfigured(t *testing.T) {
+	g := newTestGoafService(t)
+
+	status := g.buildStatus(time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC))
+
+	if !contains(status, "Bear 1 — not configured") {
+		t.Errorf("expected Bear 1 not configured, got:\n%s", status)
+	}
+	if !contains(status, "Bear 2 — not configured") {
+		t.Errorf("expected Bear 2 not configured, got:\n%s", status)
+	}
+}
+
+func TestGoafService_Status_AlertInFuture(t *testing.T) {
+	g := newTestGoafService(t)
+	mustConfigure(t, g, 1, "2026-03-15", "19:00", 10) // alert at 18:50
+
+	// 10:00 UTC — 8h 50min before the alert
+	status := g.buildStatus(time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC))
+
+	if !contains(status, "Bear 1 — alert in 8h 50min (today, event 19:00 UTC)") {
+		t.Errorf("unexpected status:\n%s", status)
+	}
+}
+
+func TestGoafService_Status_AlertInFutureNextBearDay(t *testing.T) {
+	g := newTestGoafService(t)
+	mustConfigure(t, g, 1, "2026-03-15", "19:00", 10)
+
+	// 16 March — not a bear1 day; next is 17 March
+	now := time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC)
+	status := g.buildStatus(now)
+
+	if !contains(status, "Bear 1 — alert in 1d 8h 50min (2026-03-17, event 19:00 UTC)") {
+		t.Errorf("unexpected status:\n%s", status)
+	}
+}
+
+func TestGoafService_Status_InAlertWindow(t *testing.T) {
+	g := newTestGoafService(t)
+	mustConfigure(t, g, 1, "2026-03-15", "19:00", 10) // alert window [18:50, 19:00)
+
+	// 18:55 — inside the window
+	status := g.buildStatus(time.Date(2026, 3, 15, 18, 55, 0, 0, time.UTC))
+
+	if !contains(status, "Bear 1 — alert firing now (today, event 19:00 UTC)") {
+		t.Errorf("unexpected status:\n%s", status)
+	}
+}
+
+func TestGoafService_Status_AlreadySentToday(t *testing.T) {
+	g := newTestGoafService(t)
+	mustConfigure(t, g, 1, "2026-03-15", "19:00", 10)
+	g.state.Alerts[0].LastAlertDate = "2026-03-15"
+
+	// 18:55 — in window but already sent; should show next occurrence (17 March)
+	status := g.buildStatus(time.Date(2026, 3, 15, 18, 55, 0, 0, time.UTC))
+
+	if !contains(status, "2026-03-17") {
+		t.Errorf("expected next occurrence on 2026-03-17, got:\n%s", status)
+	}
+}
+
+func TestGoafService_Status_AfterEventToday(t *testing.T) {
+	g := newTestGoafService(t)
+	mustConfigure(t, g, 1, "2026-03-15", "19:00", 10)
+
+	// 20:00 — event has passed; should show next occurrence (17 March)
+	status := g.buildStatus(time.Date(2026, 3, 15, 20, 0, 0, 0, time.UTC))
+
+	if !contains(status, "2026-03-17") {
+		t.Errorf("expected next occurrence on 2026-03-17, got:\n%s", status)
+	}
+}
+
+func TestGoafService_Status_BothBears(t *testing.T) {
+	g := newTestGoafService(t)
+	mustConfigure(t, g, 1, "2026-03-15", "19:00", 10)
+	mustConfigure(t, g, 2, "2026-03-16", "00:10", 10)
+
+	// 15 March 10:00 — bear1 alert is today, bear2 alert is tomorrow
+	status := g.buildStatus(time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC))
+
+	if !contains(status, "Bear 1") || !contains(status, "Bear 2") {
+		t.Errorf("expected both bears in status:\n%s", status)
+	}
+	if !contains(status, "today") {
+		t.Errorf("expected 'today' for Bear 1:\n%s", status)
+	}
+	if !contains(status, "2026-03-16") {
+		t.Errorf("expected 2026-03-16 for Bear 2:\n%s", status)
+	}
+}
+
+// contains is a simple substring helper for status assertions.
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
 }
 
 // --- Register smoke test -----------------------------------------------------
