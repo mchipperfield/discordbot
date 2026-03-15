@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -14,11 +15,13 @@ import (
 	"github.com/mchipperfield/discordbot/voice"
 )
 
+// knownUsers maps Discord user IDs to friendly names for use in handlers.
+var knownUsers = []string{"845223962052788224"} // Kinslayer discord ID
+
 var (
 	kitRegex      = regexp.MustCompile(`\bkit\b`)
 	fullSendRegex = regexp.MustCompile(`\bfull send\b`)
 	listenRegex   = regexp.MustCompile(`\blisten\b`)
-	dadRegex      = regexp.MustCompile(`\bdad\b`)
 )
 
 // Register wires all NXG server handlers onto s for the given guildID.
@@ -99,7 +102,7 @@ type dadJokeResponse struct {
 
 func dadJoke() func(*discordgo.Session, *discordgo.MessageCreate) {
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
-		if !isDad(m.Content) {
+		if !mentionsKnownUser(m) {
 			return
 		}
 		req, _ := http.NewRequest("GET", "https://icanhazdadjoke.com/", nil)
@@ -169,6 +172,11 @@ func isListen(content string) bool {
 	return listenRegex.MatchString(strings.ToLower(content))
 }
 
-func isDad(content string) bool {
-	return dadRegex.MatchString(strings.ToLower(content))
+func mentionsKnownUser(m *discordgo.MessageCreate) bool {
+	for _, u := range m.Mentions {
+		if slices.Contains(knownUsers, u.ID) {
+			return true
+		}
+	}
+	return false
 }
