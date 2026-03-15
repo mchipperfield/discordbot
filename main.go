@@ -54,6 +54,8 @@ func main() {
 		geminiAPIKey      = fs.String("gemini_api_key", "", "API key for Gemini AI service")
 		playerIDFile      = fs.String("player_id_file", "player_ids.csv", "File to store player IDs")
 		giftCodeChannelID = fs.String("gift_code_channel_id", "1428776775621673001", "Channel ID to listen for gift codes in")
+		goafChannelID     = fs.String("goaf_channel_id", "", "Channel ID to post bear alerts in")
+		goafStateFile     = fs.String("goaf_state_file", "goaf_state.json", "File to persist GOAF alert state")
 	)
 	if err := ff.Parse(fs,
 		os.Args[1:],
@@ -89,10 +91,12 @@ func main() {
 	}
 
 	ks := kingshot.NewKingShot(*playerIDFile)
+	goafSvc := nxg.NewGoafService(*goafChannelID, *goafStateFile)
 
 	// Register all handlers once at startup — never inside a Ready callback.
 	sd.Register(session, *serverId, dcaService.GetSound("wake_up.dca"))
 	nxg.Register(session, *nxgID, dcaService.GetSound("hey_listen.dca"), aiService)
+	goafSvc.Register(session)
 	ks.Register(session, *giftCodeChannelID)
 	session.AddHandler(middleware.OnAnyMessage(americanSpellingPolice(spellings)))
 
@@ -121,7 +125,8 @@ func main() {
 		}
 
 		// Register NXG guild commands.
-		for _, v := range ks.GiftCodeCommands() {
+		nxgCommands := append(ks.GiftCodeCommands(), goafSvc.GoafCommands()...)
+		for _, v := range nxgCommands {
 			if _, err := s.ApplicationCommandCreate(s.State.User.ID, *nxgID, v); err != nil {
 				logger.Error("cannot create command", "command", v.Name, "error", err)
 			}
