@@ -93,11 +93,13 @@ func main() {
 
 	ks := kingshot.NewKingShot(*playerIDFile)
 	goafSvc := nxg.NewGoafService(*goafChannelID, *goafStateFile)
+	whs := nxg.NewGoafService("1479771664811036885", "whs_state.json")
 
 	// Register all handlers once at startup — never inside a Ready callback.
 	sd.Register(session, *serverId, dcaService.GetSound("wake_up.dca"))
 	nxg.Register(session, *nxgID, dcaService.GetSound("hey_listen.dca"), aiService)
 	goafSvc.Register(session)
+	whs.Register(session)
 	ks.Register(session, *giftCodeChannelID)
 	session.AddHandler(middleware.OnAnyMessage(americanSpellingPolice(spellings)))
 
@@ -133,7 +135,7 @@ func main() {
 			}
 		}
 
-		whsCommands := append(ks.GiftCodeCommands(), goafSvc.GoafCommands()...)
+		whsCommands := append(ks.GiftCodeCommands(), whs.GoafCommands()...)
 		for _, v := range whsCommands {
 			if _, err := s.ApplicationCommandCreate(s.State.User.ID, ServerWHS, v); err != nil {
 				logger.Error("cannot create command", "command", v.Name, "error", err)
