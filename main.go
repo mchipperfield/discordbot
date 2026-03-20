@@ -105,7 +105,7 @@ func main() {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
 
 		// Clean up old commands to ensure a fresh state.
-		for _, guildID := range []string{"", *nxgID} {
+		for _, guildID := range []string{"", *nxgID, ServerWHS} {
 			existing, err := s.ApplicationCommands(s.State.User.ID, guildID)
 			if err != nil {
 				logger.Info("could not fetch existing commands", "guild", guildID, "error", err)
