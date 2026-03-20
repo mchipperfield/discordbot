@@ -40,6 +40,7 @@ var askCommand = []*discordgo.ApplicationCommand{
 const (
 	Server2985 = "1339671620880699433"
 	ServerNXG  = "1423406563850190850"
+	ServerWHS  = "1479709703155093587"
 )
 
 func main() {
@@ -131,6 +132,14 @@ func main() {
 				logger.Error("cannot create command", "command", v.Name, "error", err)
 			}
 		}
+
+		whsCommands := append(ks.GiftCodeCommands(), goafSvc.GoafCommands()...)
+		for _, v := range whsCommands {
+			if _, err := s.ApplicationCommandCreate(s.State.User.ID, ServerWHS, v); err != nil {
+				logger.Error("cannot create command", "command", v.Name, "error", err)
+			}
+		}
+
 	})
 
 	if err := session.Open(); err != nil {
