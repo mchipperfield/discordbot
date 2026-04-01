@@ -34,7 +34,7 @@ func shoutingPolice(userID string) func(*discordgo.Session, *discordgo.MessageCr
 		if !isAllCaps(m.Content) {
 			return
 		}
-		_, err := s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Hey %s, stop shouting!", m.Author.Mention()))
+		_, err := s.ChannelMessageSendReply(m.ChannelID, fmt.Sprintf("Hey %s, stop shouting!", m.Author.Mention()), m.Reference())
 		if err != nil {
 			slog.Error("failed to send shouting reply", "error", err)
 		}

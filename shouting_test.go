@@ -85,6 +85,7 @@ func newShoutingSession(t *testing.T, channelID string, sent *string) *discordgo
 func newShoutingMessage(authorID, content string) *discordgo.MessageCreate {
 	return &discordgo.MessageCreate{
 		Message: &discordgo.Message{
+			ID:        "msg-1",
 			ChannelID: "chan-1",
 			Content:   content,
 			Author:    &discordgo.User{ID: authorID, Username: "tester"},
