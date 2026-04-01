@@ -100,6 +100,7 @@ func main() {
 	goafSvc.Register(session)
 	ks.Register(session, *giftCodeChannelID)
 	session.AddHandler(middleware.OnAnyMessage(americanSpellingPolice(spellings)))
+	session.AddHandler(middleware.OnMessage(*nxgID, shoutingPolice(shoutingTargetUserID)))
 
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
