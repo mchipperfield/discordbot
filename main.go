@@ -41,6 +41,7 @@ const (
 	Server2985 = "1339671620880699433"
 	ServerNXG  = "1423406563850190850"
 	ServerWHS  = "1479709703155093587"
+	ServerSTR  = "1418924707373383774"
 )
 
 func main() {
@@ -106,7 +107,7 @@ func main() {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
 
 		// Clean up old commands to ensure a fresh state.
-		for _, guildID := range []string{"", *nxgID, ServerWHS} {
+		for _, guildID := range []string{"", *nxgID, ServerWHS, ServerSTR} {
 			existing, err := s.ApplicationCommands(s.State.User.ID, guildID)
 			if err != nil {
 				logger.Info("could not fetch existing commands", "guild", guildID, "error", err)
@@ -134,9 +135,11 @@ func main() {
 			}
 		}
 
-		for _, v := range ks.GiftCodeCommands() {
-			if _, err := s.ApplicationCommandCreate(s.State.User.ID, ServerWHS, v); err != nil {
-				logger.Error("cannot create command", "command", v.Name, "error", err)
+		for _, guildID := range []string{ServerWHS, ServerSTR} {
+			for _, v := range ks.GiftCodeCommands() {
+				if _, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, v); err != nil {
+					logger.Error("cannot create command", "command", v.Name, "error", err)
+				}
 			}
 		}
 
