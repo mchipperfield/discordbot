@@ -135,15 +135,11 @@ func main() {
 			}
 		}
 
-		for _, v := range ks.GiftCodeCommands() {
-			if _, err := s.ApplicationCommandCreate(s.State.User.ID, ServerWHS, v); err != nil {
-				logger.Error("cannot create command", "command", v.Name, "error", err)
-			}
-		}
-
-		for _, v := range ks.GiftCodeCommands() {
-			if _, err := s.ApplicationCommandCreate(s.State.User.ID, ServerSTR, v); err != nil {
-				logger.Error("cannot create command", "command", v.Name, "error", err)
+		for _, guildID := range []string{ServerWHS, ServerSTR} {
+			for _, v := range ks.GiftCodeCommands() {
+				if _, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, v); err != nil {
+					logger.Error("cannot create command", "command", v.Name, "error", err)
+				}
 			}
 		}
 
