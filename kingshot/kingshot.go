@@ -31,11 +31,12 @@ const (
 
 // Error codes returned by the KingShot API.
 const (
-	ErrCodeSuccess  = "20000"
-	ErrCodeClaimed  = "40008"
-	ErrCodeExpired  = "40007"
-	ErrCodeNotFound = "40014"
-	ErrCodeLogin    = "40009"
+	ErrCodeSuccess      = "20000"
+	ErrCodeClaimed      = "40008"
+	ErrCodeExpired      = "40007"
+	ErrCodeNotFound     = "40014"
+	ErrCodeLogin        = "40009"
+	ErrCodeLimitReached = "40005"
 )
 
 // r4RoleId is the Discord role that is allowed to add gift codes.
@@ -287,6 +288,8 @@ func interpretRedeemResult(errCode ErrCode) redeemOutcome {
 		return redeemOutcome{msg: "Code is not valid.", codeInvalid: true}
 	case ErrCodeLogin:
 		return redeemOutcome{msg: "Unable to login.", loginFailed: true}
+	case ErrCodeLimitReached:
+		return redeemOutcome{msg: "Redemption Limit Reached"}
 	default:
 		return redeemOutcome{msg: "Failed to redeem code."}
 	}

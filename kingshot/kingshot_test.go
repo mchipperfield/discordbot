@@ -311,6 +311,7 @@ func TestInterpretRedeemResult(t *testing.T) {
 		{ErrCodeExpired, "Code expired or not found.", true, false, false},
 		{ErrCodeNotFound, "Code is not valid.", false, true, false},
 		{ErrCodeLogin, "Unable to login.", false, false, true},
+		{ErrCodeLimitReached, "Redemption Limit Reached", false, false, false},
 		{"99999", "Failed to redeem code.", false, false, false},
 	}
 	for _, tt := range tests {
