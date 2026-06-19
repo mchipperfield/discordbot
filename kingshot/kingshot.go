@@ -69,10 +69,12 @@ type KingShot struct {
 	redeemURL    string
 }
 
-// NewKingShot returns a KingShot ready for production use.
-func NewKingShot(playerIDFile string) *KingShot {
+// NewKingShot returns a KingShot ready for production use. Any activeCodes
+// provided are pre-loaded as already-active codes.
+func NewKingShot(playerIDFile string, activeCodes ...string) *KingShot {
 	return &KingShot{
 		playerIDFile: playerIDFile,
+		activeCodes:  activeCodes,
 		loginURL:     defaultLoginURL,
 		redeemURL:    defaultRedeemURL,
 		client: &http.Client{

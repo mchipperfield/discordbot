@@ -93,7 +93,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ks := kingshot.NewKingShot(*playerIDFile)
+	ks := kingshot.NewKingShot(*playerIDFile, "PICNIC2026", "AJISAI26JP", "Kingshot888", "VIP777")
 	goafSvc := nxg.NewGoafService(*goafChannelID, *goafStateFile)
 
 	// Register all handlers once at startup — never inside a Ready callback.
@@ -103,6 +103,7 @@ func main() {
 	ks.Register(session, *giftCodeChannelID)
 	session.AddHandler(middleware.OnAnyMessage(americanSpellingPolice(spellings)))
 	session.AddHandler(middleware.OnMessage(*nxgID, shoutingPolice(shoutingTargetUserID)))
+	session.AddHandler(middleware.OnMessage(ServerBSV, shoutingPolice(shoutingTargetUserID)))
 
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
