@@ -2,15 +2,12 @@ package kingshot
 
 import (
 	"crypto/md5"
-	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -19,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	csvstore "github.com/mchipperfield/discordbot/kingshot/storage/csv"
 	"golang.org/x/time/rate"
 )
 
@@ -64,6 +62,7 @@ type KingShot struct {
 	activeCodes  []string
 	expiredCodes []string
 	playerIDFile string
+	store        PlayerStore
 	client       *http.Client
 	loginURL     string
 	redeemURL    string
@@ -72,17 +71,29 @@ type KingShot struct {
 // NewKingShot returns a KingShot ready for production use. Any activeCodes
 // provided are pre-loaded as already-active codes.
 func NewKingShot(playerIDFile string, activeCodes ...string) *KingShot {
+	return NewKingShotWithStore(csvstore.New(playerIDFile), activeCodes...)
+}
+
+// NewKingShotWithStore returns a KingShot backed by store.
+func NewKingShotWithStore(store PlayerStore, activeCodes ...string) *KingShot {
 	return &KingShot{
-		playerIDFile: playerIDFile,
-		activeCodes:  activeCodes,
-		loginURL:     defaultLoginURL,
-		redeemURL:    defaultRedeemURL,
+		activeCodes: activeCodes,
+		store:       store,
+		loginURL:    defaultLoginURL,
+		redeemURL:   defaultRedeemURL,
 		client: &http.Client{
 			Transport: &transport{
 				limiter: rate.NewLimiter(rate.Every(2*time.Second), 1),
 			},
 		},
 	}
+}
+
+func (ks *KingShot) playerStore() PlayerStore {
+	if ks.store != nil {
+		return ks.store
+	}
+	return csvstore.New(ks.playerIDFile)
 }
 
 // --- Discord handler wiring ---------------------------------------------------
@@ -167,14 +178,14 @@ func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.Interactio
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 
-	playerToDiscord, err := ks.readPlayerFile()
+	existingDiscordID, found, err := ks.playerStore().GetDiscordID(playerID)
 	if err != nil {
 		slog.Error("failed to read player file for registration", "error", err)
 		reply(s, i, "Error registering player ID.")
 		return
 	}
 
-	if existingDiscordID, ok := playerToDiscord[playerID]; ok {
+	if found {
 		if existingDiscordID == discordID {
 			reply(s, i, "This player ID is already registered to your Discord account.")
 		} else {
@@ -183,8 +194,7 @@ func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 
-	playerToDiscord[playerID] = discordID
-	if err := ks.writePlayerFile(playerToDiscord); err != nil {
+	if err := ks.playerStore().Upsert(playerID, discordID); err != nil {
 		slog.Error("failed to write player file", "error", err)
 		reply(s, i, "Error registering player ID.")
 		return
@@ -305,24 +315,7 @@ func (ks *KingShot) isCodeKnown(code string) (active, expired bool) {
 
 // loadPlayerIDs reads the player CSV file and returns all player IDs in row order.
 func (ks *KingShot) loadPlayerIDs() ([]string, error) {
-	file, err := os.Open(ks.playerIDFile)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	records, err := csv.NewReader(file).ReadAll()
-	if err != nil {
-		return nil, err
-	}
-
-	ids := make([]string, 0, len(records))
-	for _, record := range records {
-		if len(record) >= 1 {
-			ids = append(ids, record[0])
-		}
-	}
-	return ids, nil
+	return ks.playerStore().ListPlayerIDs()
 }
 
 // redeemForPlayer logs playerID in, redeems code, and returns a human-readable
@@ -444,52 +437,6 @@ func (ks *KingShot) redeemActiveCodes(playerID string) string {
 	}
 
 	return "\n\n**Gift Code Redemption Results:**\n" + strings.Join(results, "\n")
-}
-
-// --- File I/O ----------------------------------------------------------------
-
-// readPlayerFile reads the CSV player file and returns a playerID → discordID map.
-// Caller must hold ks.mu.
-func (ks *KingShot) readPlayerFile() (map[string]string, error) {
-	playerToDiscord := make(map[string]string)
-
-	file, err := os.OpenFile(ks.playerIDFile, os.O_RDWR|os.O_CREATE, 0644)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	reader := csv.NewReader(file)
-	csvRecords, err := reader.ReadAll()
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-
-	for _, record := range csvRecords {
-		if len(record) == 2 {
-			playerToDiscord[record[0]] = record[1]
-		}
-	}
-	return playerToDiscord, nil
-}
-
-// writePlayerFile overwrites the CSV player file with the given map.
-// Caller must hold ks.mu.
-func (ks *KingShot) writePlayerFile(playerToDiscord map[string]string) error {
-	file, err := os.OpenFile(ks.playerIDFile, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	w := csv.NewWriter(file)
-	for pID, dID := range playerToDiscord {
-		if err := w.Write([]string{pID, dID}); err != nil {
-			return err
-		}
-	}
-	w.Flush()
-	return w.Error()
 }
 
 // --- KingShot API client -----------------------------------------------------
