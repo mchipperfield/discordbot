@@ -2,7 +2,6 @@ package csv
 
 import (
 	"encoding/csv"
-	"io"
 	"os"
 	"sync"
 )
@@ -31,7 +30,7 @@ func (s *Store) ListPlayerIDs() ([]string, error) {
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
-	if err != nil && err != io.EOF {
+	if err != nil {
 		return nil, err
 	}
 
@@ -57,7 +56,7 @@ func (s *Store) GetDiscordID(playerID string) (discordID string, found bool, err
 	defer file.Close()
 
 	records, err := csv.NewReader(file).ReadAll()
-	if err != nil && err != io.EOF {
+	if err != nil {
 		return "", false, err
 	}
 
@@ -86,7 +85,7 @@ func (s *Store) Upsert(playerID, discordID string) error {
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
-	if err != nil && err != io.EOF {
+	if err != nil {
 		return err
 	}
 
@@ -117,10 +116,11 @@ func (s *Store) Upsert(playerID, discordID string) error {
 		if len(row) == 0 {
 			continue
 		}
-		if len(row) == 1 {
-			row = []string{row[0], ""}
+		discordID := ""
+		if len(row) > 1 {
+			discordID = row[1]
 		}
-		if err := writer.Write(row[:2]); err != nil {
+		if err := writer.Write([]string{row[0], discordID}); err != nil {
 			return err
 		}
 	}

@@ -61,7 +61,6 @@ type KingShot struct {
 	mu           sync.Mutex
 	activeCodes  []string
 	expiredCodes []string
-	playerIDFile string
 	store        PlayerStore
 	client       *http.Client
 	loginURL     string
@@ -90,13 +89,6 @@ func NewKingShotWithStore(store PlayerStore, activeCodes ...string) *KingShot {
 }
 
 func (ks *KingShot) playerStore() PlayerStore {
-	if ks.store != nil {
-		return ks.store
-	}
-	if ks.playerIDFile == "" {
-		return nil
-	}
-	ks.store = csvstore.New(ks.playerIDFile)
 	return ks.store
 }
 

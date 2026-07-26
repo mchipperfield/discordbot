@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
+	csvstore "github.com/mchipperfield/discordbot/kingshot/storage/csv"
 )
 
 // TestErrCodeUnmarshalJSON verifies that ErrCode correctly deserialises both
@@ -169,7 +170,7 @@ func TestKingShot_processNewCode(t *testing.T) {
 	})
 
 	t.Run("player file missing", func(t *testing.T) {
-		ks := &KingShot{playerIDFile: "/nonexistent/path/players.csv"}
+		ks := NewKingShotWithStore(csvstore.New("/nonexistent/path/players.csv"))
 		result := ks.processNewCode("NEWCODE")
 		if !strings.Contains(result, "failed to open player file") {
 			t.Errorf("expected file open error, got: %q", result)
@@ -183,7 +184,7 @@ func TestKingShot_processNewCode(t *testing.T) {
 		}
 		f.Close()
 
-		ks := &KingShot{playerIDFile: f.Name()}
+		ks := NewKingShotWithStore(csvstore.New(f.Name()))
 		result := ks.processNewCode("FRESHCODE")
 		if !strings.Contains(result, "no registered players") {
 			t.Errorf("expected 'no registered players', got: %q", result)
@@ -197,7 +198,7 @@ func TestKingShot_processNewCode(t *testing.T) {
 // TestKingShot_concurrentAccess runs concurrent processNewCode calls so the
 // race detector (-race) can catch any unsynchronised access to the shared slices.
 func TestKingShot_concurrentAccess(t *testing.T) {
-	ks := &KingShot{playerIDFile: "/nonexistent/path/players.csv"}
+	ks := NewKingShotWithStore(csvstore.New("/nonexistent/path/players.csv"))
 	var wg sync.WaitGroup
 	for i := range 20 {
 		wg.Add(1)
@@ -367,7 +368,7 @@ func TestKingShot_isCodeKnown(t *testing.T) {
 // malformed rows, and missing file.
 func TestKingShot_loadPlayerIDs(t *testing.T) {
 	t.Run("valid CSV returns player IDs in order", func(t *testing.T) {
-		ks := &KingShot{playerIDFile: writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")}
+		ks := NewKingShotWithStore(csvstore.New(writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")))
 		ids, err := ks.loadPlayerIDs()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -384,7 +385,7 @@ func TestKingShot_loadPlayerIDs(t *testing.T) {
 	})
 
 	t.Run("empty file returns empty slice", func(t *testing.T) {
-		ks := &KingShot{playerIDFile: writeTempCSV(t, "")}
+		ks := NewKingShotWithStore(csvstore.New(writeTempCSV(t, "")))
 		ids, err := ks.loadPlayerIDs()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -396,7 +397,7 @@ func TestKingShot_loadPlayerIDs(t *testing.T) {
 
 	t.Run("malformed rows are skipped", func(t *testing.T) {
 		// CSV with a short row that has only one field
-		ks := &KingShot{playerIDFile: writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")}
+		ks := NewKingShotWithStore(csvstore.New(writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")))
 		ids, err := ks.loadPlayerIDs()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -407,7 +408,7 @@ func TestKingShot_loadPlayerIDs(t *testing.T) {
 	})
 
 	t.Run("missing file returns error", func(t *testing.T) {
-		ks := &KingShot{playerIDFile: "/nonexistent/file.csv"}
+		ks := NewKingShotWithStore(csvstore.New("/nonexistent/file.csv"))
 		_, err := ks.loadPlayerIDs()
 		if err == nil {
 			t.Fatal("expected error for missing file, got nil")
