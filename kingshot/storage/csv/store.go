@@ -116,11 +116,11 @@ func (s *Store) Upsert(playerID, discordID string) error {
 		if len(row) == 0 {
 			continue
 		}
-		discordID := ""
+		rowDiscordID := ""
 		if len(row) > 1 {
-			discordID = row[1]
+			rowDiscordID = row[1]
 		}
-		if err := writer.Write([]string{row[0], discordID}); err != nil {
+		if err := writer.Write([]string{row[0], rowDiscordID}); err != nil {
 			return err
 		}
 	}

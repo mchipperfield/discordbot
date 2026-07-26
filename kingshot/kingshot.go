@@ -88,10 +88,6 @@ func NewKingShotWithStore(store PlayerStore, activeCodes ...string) *KingShot {
 	}
 }
 
-func (ks *KingShot) playerStore() PlayerStore {
-	return ks.store
-}
-
 // --- Discord handler wiring ---------------------------------------------------
 
 // Register adds the KingShot interaction and message handlers to s once at startup.
@@ -174,7 +170,7 @@ func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.Interactio
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 
-	store := ks.playerStore()
+	store := ks.store
 	if store == nil {
 		reply(s, i, "Error registering player ID.")
 		return
@@ -317,7 +313,7 @@ func (ks *KingShot) isCodeKnown(code string) (active, expired bool) {
 
 // loadPlayerIDs reads the player CSV file and returns all player IDs in row order.
 func (ks *KingShot) loadPlayerIDs() ([]string, error) {
-	store := ks.playerStore()
+	store := ks.store
 	if store == nil {
 		return nil, fmt.Errorf("player store is not configured")
 	}

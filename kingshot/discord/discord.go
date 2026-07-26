@@ -5,7 +5,8 @@ import (
 	"github.com/mchipperfield/discordbot/kingshot"
 )
 
-// Register wires KingShot Discord handlers onto the given session.
+// Register wires KingShot Discord handlers onto the given session at startup.
+// giftCodeChannelID is the channel monitored for bot-posted gift code messages.
 func Register(s *discordgo.Session, ks *kingshot.KingShot, giftCodeChannelID string) {
 	s.AddHandler(ks.InteractionHandler())
 	s.AddHandler(ks.MessageHandler(giftCodeChannelID))
