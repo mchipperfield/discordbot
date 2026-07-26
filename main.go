@@ -14,6 +14,8 @@ import (
 	"github.com/mchipperfield/discordbot/ai"
 	"github.com/mchipperfield/discordbot/dca"
 	"github.com/mchipperfield/discordbot/kingshot"
+	ksdiscord "github.com/mchipperfield/discordbot/kingshot/discord"
+	kingshotcsv "github.com/mchipperfield/discordbot/kingshot/storage/csv"
 	"github.com/mchipperfield/discordbot/middleware"
 	"github.com/mchipperfield/discordbot/server/nxg"
 	"github.com/mchipperfield/discordbot/server/sd"
@@ -93,14 +95,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	ks := kingshot.NewKingShot(*playerIDFile, "PICNIC2026", "AJISAI26JP", "Kingshot888", "VIP777")
+	ks := kingshot.NewGiftCodeService(
+		kingshotcsv.New(*playerIDFile),
+		"PICNIC2026", "AJISAI26JP", "Kingshot888", "VIP777",
+	)
 	goafSvc := nxg.NewGoafService(*goafChannelID, *goafStateFile)
 
 	// Register all handlers once at startup — never inside a Ready callback.
 	sd.Register(session, *serverId, dcaService.GetSound("wake_up.dca"))
 	nxg.Register(session, *nxgID, dcaService.GetSound("hey_listen.dca"), aiService)
 	goafSvc.Register(session)
-	ks.Register(session, *giftCodeChannelID)
+	ksdiscord.Register(session, ks, *giftCodeChannelID)
 	session.AddHandler(middleware.OnAnyMessage(americanSpellingPolice(spellings)))
 	session.AddHandler(middleware.OnMessage(*nxgID, shoutingPolice(shoutingTargetUserID)))
 	session.AddHandler(middleware.OnMessage(ServerBSV, shoutingPolice(shoutingTargetUserID)))

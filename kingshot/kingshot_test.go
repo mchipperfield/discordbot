@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
+	csvstore "github.com/mchipperfield/discordbot/kingshot/storage/csv"
 )
 
 // TestErrCodeUnmarshalJSON verifies that ErrCode correctly deserialises both
@@ -153,7 +154,7 @@ func TestEncodePayload(t *testing.T) {
 // network calls, using an isolated KingShot instance per test.
 func TestKingShot_processNewCode(t *testing.T) {
 	t.Run("already active", func(t *testing.T) {
-		ks := &KingShot{activeCodes: []string{"EXISTINGCODE"}}
+		ks := &GiftCodeService{activeCodes: []string{"EXISTINGCODE"}}
 		result := ks.processNewCode("EXISTINGCODE")
 		if !strings.Contains(result, "already active") {
 			t.Errorf("expected 'already active', got: %q", result)
@@ -161,7 +162,7 @@ func TestKingShot_processNewCode(t *testing.T) {
 	})
 
 	t.Run("already expired", func(t *testing.T) {
-		ks := &KingShot{expiredCodes: []string{"EXPIREDCODE"}}
+		ks := &GiftCodeService{expiredCodes: []string{"EXPIREDCODE"}}
 		result := ks.processNewCode("EXPIREDCODE")
 		if !strings.Contains(result, "expired") {
 			t.Errorf("expected 'expired', got: %q", result)
@@ -169,7 +170,7 @@ func TestKingShot_processNewCode(t *testing.T) {
 	})
 
 	t.Run("player file missing", func(t *testing.T) {
-		ks := &KingShot{playerIDFile: "/nonexistent/path/players.csv"}
+		ks := NewGiftCodeService(csvstore.New("/nonexistent/path/players.csv"))
 		result := ks.processNewCode("NEWCODE")
 		if !strings.Contains(result, "failed to open player file") {
 			t.Errorf("expected file open error, got: %q", result)
@@ -183,7 +184,7 @@ func TestKingShot_processNewCode(t *testing.T) {
 		}
 		f.Close()
 
-		ks := &KingShot{playerIDFile: f.Name()}
+		ks := NewGiftCodeService(csvstore.New(f.Name()))
 		result := ks.processNewCode("FRESHCODE")
 		if !strings.Contains(result, "no registered players") {
 			t.Errorf("expected 'no registered players', got: %q", result)
@@ -197,7 +198,7 @@ func TestKingShot_processNewCode(t *testing.T) {
 // TestKingShot_concurrentAccess runs concurrent processNewCode calls so the
 // race detector (-race) can catch any unsynchronised access to the shared slices.
 func TestKingShot_concurrentAccess(t *testing.T) {
-	ks := &KingShot{playerIDFile: "/nonexistent/path/players.csv"}
+	ks := NewGiftCodeService(csvstore.New("/nonexistent/path/players.csv"))
 	var wg sync.WaitGroup
 	for i := range 20 {
 		wg.Add(1)
@@ -261,7 +262,7 @@ func TestRedeemResponseDecoding(t *testing.T) {
 
 // mockKingShotAPI starts an httptest server that responds to /player (login) and
 // /gift_code (redeem) with the provided values, and returns a KingShot wired to it.
-func mockKingShotAPI(t *testing.T, loginCode int, redeemErrCode string) *KingShot {
+func mockKingShotAPI(t *testing.T, loginCode int, redeemErrCode string) *GiftCodeService {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -275,7 +276,7 @@ func mockKingShotAPI(t *testing.T, loginCode int, redeemErrCode string) *KingSho
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &KingShot{
+	return &GiftCodeService{
 		loginURL:  srv.URL + "/player",
 		redeemURL: srv.URL + "/gift_code",
 		client:    srv.Client(),
@@ -336,7 +337,7 @@ func TestInterpretRedeemResult(t *testing.T) {
 // TestKingShot_isCodeKnown verifies that active and expired membership is
 // detected correctly without touching any I/O.
 func TestKingShot_isCodeKnown(t *testing.T) {
-	ks := &KingShot{
+	ks := &GiftCodeService{
 		activeCodes:  []string{"ACTIVE1", "ACTIVE2"},
 		expiredCodes: []string{"EXPIRED1"},
 	}
@@ -367,7 +368,7 @@ func TestKingShot_isCodeKnown(t *testing.T) {
 // malformed rows, and missing file.
 func TestKingShot_loadPlayerIDs(t *testing.T) {
 	t.Run("valid CSV returns player IDs in order", func(t *testing.T) {
-		ks := &KingShot{playerIDFile: writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")}
+		ks := NewGiftCodeService(csvstore.New(writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")))
 		ids, err := ks.loadPlayerIDs()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -384,7 +385,7 @@ func TestKingShot_loadPlayerIDs(t *testing.T) {
 	})
 
 	t.Run("empty file returns empty slice", func(t *testing.T) {
-		ks := &KingShot{playerIDFile: writeTempCSV(t, "")}
+		ks := NewGiftCodeService(csvstore.New(writeTempCSV(t, "")))
 		ids, err := ks.loadPlayerIDs()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -396,7 +397,7 @@ func TestKingShot_loadPlayerIDs(t *testing.T) {
 
 	t.Run("malformed rows are skipped", func(t *testing.T) {
 		// CSV with a short row that has only one field
-		ks := &KingShot{playerIDFile: writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")}
+		ks := NewGiftCodeService(csvstore.New(writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")))
 		ids, err := ks.loadPlayerIDs()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -407,7 +408,7 @@ func TestKingShot_loadPlayerIDs(t *testing.T) {
 	})
 
 	t.Run("missing file returns error", func(t *testing.T) {
-		ks := &KingShot{playerIDFile: "/nonexistent/file.csv"}
+		ks := NewGiftCodeService(csvstore.New("/nonexistent/file.csv"))
 		_, err := ks.loadPlayerIDs()
 		if err == nil {
 			t.Fatal("expected error for missing file, got nil")
@@ -443,7 +444,7 @@ func TestKingShot_redeemForPlayer(t *testing.T) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}))
 		t.Cleanup(srv.Close)
-		ks := &KingShot{
+		ks := &GiftCodeService{
 			loginURL: srv.URL + "/player", redeemURL: srv.URL + "/gift_code",
 			client: srv.Client(),
 		}
@@ -475,7 +476,7 @@ func TestFormatRedemptionReport(t *testing.T) {
 // TestKingShot_GiftCodeCommands verifies that the command list contains exactly
 // the /register and /code commands with required options.
 func TestKingShot_GiftCodeCommands(t *testing.T) {
-	ks := NewKingShot("players.csv")
+	ks := NewGiftCodeService(csvstore.New("players.csv"))
 	cmds := ks.GiftCodeCommands()
 
 	if len(cmds) != 2 {
@@ -500,7 +501,7 @@ func TestKingShot_GiftCodeCommands(t *testing.T) {
 // TestKingShot_InteractionHandler_IgnoresNonAppCommand verifies that the
 // interaction handler silently ignores non-ApplicationCommand interactions.
 func TestKingShot_InteractionHandler_IgnoresNonAppCommand(t *testing.T) {
-	ks := NewKingShot("players.csv")
+	ks := NewGiftCodeService(csvstore.New("players.csv"))
 	h := ks.InteractionHandler()
 
 	// Should not panic — just return early.
@@ -514,7 +515,7 @@ func TestKingShot_InteractionHandler_IgnoresNonAppCommand(t *testing.T) {
 // TestKingShot_InteractionHandler_IgnoresUnknownCommand verifies that the
 // interaction handler silently ignores unrecognised slash command names.
 func TestKingShot_InteractionHandler_IgnoresUnknownCommand(t *testing.T) {
-	ks := NewKingShot("players.csv")
+	ks := NewGiftCodeService(csvstore.New("players.csv"))
 	h := ks.InteractionHandler()
 
 	// Should not panic — unknown command is a no-op.
