@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	csvstore "github.com/mchipperfield/discordbot/kingshot/storage/csv"
 	"golang.org/x/time/rate"
 )
 
@@ -57,7 +56,7 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // KingShot manages gift code state and handles all KingShot-related Discord
 // interactions. All mutable state is owned here; no package-level globals.
-type KingShot struct {
+type GiftCodeService struct {
 	mu           sync.Mutex
 	activeCodes  []string
 	expiredCodes []string
@@ -67,15 +66,9 @@ type KingShot struct {
 	redeemURL    string
 }
 
-// NewKingShot returns a KingShot ready for production use. Any activeCodes
-// provided are pre-loaded as already-active codes.
-func NewKingShot(playerIDFile string, activeCodes ...string) *KingShot {
-	return NewKingShotWithStore(csvstore.New(playerIDFile), activeCodes...)
-}
-
-// NewKingShotWithStore returns a KingShot backed by store.
-func NewKingShotWithStore(store PlayerStore, activeCodes ...string) *KingShot {
-	return &KingShot{
+// NewGiftCodeService returns a GiftCodeService backed by store.
+func NewGiftCodeService(store PlayerStore, activeCodes ...string) *GiftCodeService {
+	return &GiftCodeService{
 		activeCodes: activeCodes,
 		store:       store,
 		loginURL:    defaultLoginURL,
@@ -91,14 +84,14 @@ func NewKingShotWithStore(store PlayerStore, activeCodes ...string) *KingShot {
 // --- Discord handler wiring ---------------------------------------------------
 
 // Register adds the KingShot interaction and message handlers to s once at startup.
-func (ks *KingShot) Register(s *discordgo.Session, giftCodeChannelID string) {
+func (ks *GiftCodeService) Register(s *discordgo.Session, giftCodeChannelID string) {
 	s.AddHandler(ks.InteractionHandler())
 	s.AddHandler(ks.MessageHandler(giftCodeChannelID))
 }
 
 // GiftCodeCommands returns the slash command definitions for the KingShot gift
 // code system. Register these once in the Ready handler for the NXG guild.
-func (ks *KingShot) GiftCodeCommands() []*discordgo.ApplicationCommand {
+func (ks *GiftCodeService) GiftCodeCommands() []*discordgo.ApplicationCommand {
 	return []*discordgo.ApplicationCommand{
 		{
 			Name:        "register",
@@ -129,7 +122,7 @@ func (ks *KingShot) GiftCodeCommands() []*discordgo.ApplicationCommand {
 
 // InteractionHandler returns a handler that dispatches /register and /code
 // interactions. Register this once at startup via session.AddHandler.
-func (ks *KingShot) InteractionHandler() func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (ks *GiftCodeService) InteractionHandler() func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		if i.Type != discordgo.InteractionApplicationCommand {
 			return
@@ -143,7 +136,7 @@ func (ks *KingShot) InteractionHandler() func(s *discordgo.Session, i *discordgo
 	}
 }
 
-func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (ks *GiftCodeService) registerPlayer(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
@@ -206,7 +199,7 @@ func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.Interactio
 	reply(s, i, response)
 }
 
-func (ks *KingShot) addCode(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (ks *GiftCodeService) addCode(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
@@ -231,7 +224,7 @@ func (ks *KingShot) addCode(s *discordgo.Session, i *discordgo.InteractionCreate
 
 // MessageHandler returns a handler that watches channelID for bot-posted gift
 // codes and triggers automatic redemption. Register once at startup.
-func (ks *KingShot) MessageHandler(channelID string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+func (ks *GiftCodeService) MessageHandler(channelID string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
 	codeRegex := regexp.MustCompile(`Gift Code: ([A-Z0-9]+)`)
 
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -307,12 +300,12 @@ func interpretRedeemResult(errCode ErrCode) redeemOutcome {
 
 // isCodeKnown reports whether code is already tracked by the gift code system.
 // Caller must hold ks.mu.
-func (ks *KingShot) isCodeKnown(code string) (active, expired bool) {
+func (ks *GiftCodeService) isCodeKnown(code string) (active, expired bool) {
 	return slices.Contains(ks.activeCodes, code), slices.Contains(ks.expiredCodes, code)
 }
 
 // loadPlayerIDs reads the player CSV file and returns all player IDs in row order.
-func (ks *KingShot) loadPlayerIDs() ([]string, error) {
+func (ks *GiftCodeService) loadPlayerIDs() ([]string, error) {
 	store := ks.store
 	if store == nil {
 		return nil, fmt.Errorf("player store is not configured")
@@ -322,7 +315,7 @@ func (ks *KingShot) loadPlayerIDs() ([]string, error) {
 
 // redeemForPlayer logs playerID in, redeems code, and returns a human-readable
 // result message.
-func (ks *KingShot) redeemForPlayer(playerID, code string) string {
+func (ks *GiftCodeService) redeemForPlayer(playerID, code string) string {
 	if _, err := ks.login(playerID); err != nil {
 		slog.Error("failed to login", "error", err, "player_id", playerID)
 		return "Failed to login."
@@ -347,7 +340,7 @@ func formatRedemptionReport(code string, playerCount int, results []string) stri
 
 // processNewCode validates newCode against the KingShot API and redeems it for
 // all registered players. It is safe to call concurrently.
-func (ks *KingShot) processNewCode(newCode string) string {
+func (ks *GiftCodeService) processNewCode(newCode string) string {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 
@@ -408,7 +401,7 @@ func (ks *KingShot) processNewCode(newCode string) string {
 
 // redeemActiveCodes redeems all currently active codes for playerID and returns
 // a formatted summary string. Caller must hold ks.mu.
-func (ks *KingShot) redeemActiveCodes(playerID string) string {
+func (ks *GiftCodeService) redeemActiveCodes(playerID string) string {
 	if len(ks.activeCodes) == 0 {
 		return ""
 	}
@@ -444,7 +437,7 @@ func (ks *KingShot) redeemActiveCodes(playerID string) string {
 // --- KingShot API client -----------------------------------------------------
 
 // login authenticates fid with the KingShot API.
-func (ks *KingShot) login(fid string) (*LoginResponse, error) {
+func (ks *GiftCodeService) login(fid string) (*LoginResponse, error) {
 	data := map[string]string{
 		"fid":  fid,
 		"time": fmt.Sprintf("%d", time.Now().Unix()),
@@ -467,7 +460,7 @@ func (ks *KingShot) login(fid string) (*LoginResponse, error) {
 }
 
 // redeemGiftCode submits a redemption request for fid and cdk.
-func (ks *KingShot) redeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
+func (ks *GiftCodeService) redeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
 	data := map[string]string{
 		"fid":  fid,
 		"cdk":  cdk,

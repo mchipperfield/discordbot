@@ -95,7 +95,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ks := kingshot.NewKingShotWithStore(
+	ks := kingshot.NewGiftCodeService(
 		kingshotcsv.New(*playerIDFile),
 		"PICNIC2026", "AJISAI26JP", "Kingshot888", "VIP777",
 	)
