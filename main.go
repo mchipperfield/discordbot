@@ -135,7 +135,7 @@ func main() {
 		}
 
 		// Register NXG guild commands.
-		nxgCommands := append(ksdiscord.GiftCodeCommands(ks), goafSvc.GoafCommands()...)
+		nxgCommands := append(ks.GiftCodeCommands(), goafSvc.GoafCommands()...)
 		for _, v := range nxgCommands {
 			if _, err := s.ApplicationCommandCreate(s.State.User.ID, *nxgID, v); err != nil {
 				logger.Error("cannot create command", "command", v.Name, "error", err)
@@ -143,7 +143,7 @@ func main() {
 		}
 
 		for _, guildID := range []string{ServerWHS, ServerSTR, ServerBSV} {
-			for _, v := range ksdiscord.GiftCodeCommands(ks) {
+			for _, v := range ks.GiftCodeCommands() {
 				if _, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, v); err != nil {
 					logger.Error("cannot create command", "command", v.Name, "error", err)
 				}

@@ -23,7 +23,7 @@ func (s *Store) ListPlayerIDs() ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	file, err := os.OpenFile(s.path, os.O_RDWR|os.O_CREATE, 0644)
+	file, err := os.OpenFile(s.path, os.O_RDONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (s *Store) GetDiscordID(playerID string) (discordID string, found bool, err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	file, err := os.OpenFile(s.path, os.O_RDWR|os.O_CREATE, 0644)
+	file, err := os.OpenFile(s.path, os.O_RDONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return "", false, err
 	}
@@ -120,7 +120,7 @@ func (s *Store) Upsert(playerID, discordID string) error {
 		if len(row) == 1 {
 			row = []string{row[0], ""}
 		}
-		if err := writer.Write([]string{row[0], row[1]}); err != nil {
+		if err := writer.Write(row[:2]); err != nil {
 			return err
 		}
 	}

@@ -93,7 +93,11 @@ func (ks *KingShot) playerStore() PlayerStore {
 	if ks.store != nil {
 		return ks.store
 	}
-	return csvstore.New(ks.playerIDFile)
+	if ks.playerIDFile == "" {
+		return nil
+	}
+	ks.store = csvstore.New(ks.playerIDFile)
+	return ks.store
 }
 
 // --- Discord handler wiring ---------------------------------------------------
@@ -178,7 +182,13 @@ func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.Interactio
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 
-	existingDiscordID, found, err := ks.playerStore().GetDiscordID(playerID)
+	store := ks.playerStore()
+	if store == nil {
+		reply(s, i, "Error registering player ID.")
+		return
+	}
+
+	existingDiscordID, found, err := store.GetDiscordID(playerID)
 	if err != nil {
 		slog.Error("failed to read player file for registration", "error", err)
 		reply(s, i, "Error registering player ID.")
@@ -194,7 +204,7 @@ func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 
-	if err := ks.playerStore().Upsert(playerID, discordID); err != nil {
+	if err := store.Upsert(playerID, discordID); err != nil {
 		slog.Error("failed to write player file", "error", err)
 		reply(s, i, "Error registering player ID.")
 		return
@@ -315,7 +325,11 @@ func (ks *KingShot) isCodeKnown(code string) (active, expired bool) {
 
 // loadPlayerIDs reads the player CSV file and returns all player IDs in row order.
 func (ks *KingShot) loadPlayerIDs() ([]string, error) {
-	return ks.playerStore().ListPlayerIDs()
+	store := ks.playerStore()
+	if store == nil {
+		return nil, fmt.Errorf("player store is not configured")
+	}
+	return store.ListPlayerIDs()
 }
 
 // redeemForPlayer logs playerID in, redeems code, and returns a human-readable

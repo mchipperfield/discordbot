@@ -10,8 +10,3 @@ func Register(s *discordgo.Session, ks *kingshot.KingShot, giftCodeChannelID str
 	s.AddHandler(ks.InteractionHandler())
 	s.AddHandler(ks.MessageHandler(giftCodeChannelID))
 }
-
-// GiftCodeCommands returns the slash command definitions for KingShot.
-func GiftCodeCommands(ks *kingshot.KingShot) []*discordgo.ApplicationCommand {
-	return ks.GiftCodeCommands()
-}
