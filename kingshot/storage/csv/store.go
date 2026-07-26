@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"os"
 	"sync"
+	"syscall"
 )
 
 // Store persists player registrations in a CSV file.
@@ -27,6 +28,10 @@ func (s *Store) ListPlayerIDs() ([]string, error) {
 		return nil, err
 	}
 	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH); err != nil {
+		return nil, err
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
@@ -54,6 +59,10 @@ func (s *Store) GetDiscordID(playerID string) (discordID string, found bool, err
 		return "", false, err
 	}
 	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_SH); err != nil {
+		return "", false, err
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 
 	records, err := csv.NewReader(file).ReadAll()
 	if err != nil {
@@ -82,18 +91,31 @@ func (s *Store) Upsert(playerID, discordID string) error {
 		return err
 	}
 	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
 	if err != nil {
 		return err
 	}
+	normalized := make([][]string, 0, len(records))
+	for _, row := range records {
+		if len(row) == 0 {
+			continue
+		}
+		rowDiscordID := ""
+		if len(row) > 1 {
+			rowDiscordID = row[1]
+		}
+		normalized = append(normalized, []string{row[0], rowDiscordID})
+	}
+	records = normalized
 
 	updated := false
 	for i := range records {
-		if len(records[i]) == 0 {
-			continue
-		}
 		if records[i][0] == playerID {
 			records[i] = []string{playerID, discordID}
 			updated = true
@@ -113,14 +135,7 @@ func (s *Store) Upsert(playerID, discordID string) error {
 
 	writer := csv.NewWriter(file)
 	for _, row := range records {
-		if len(row) == 0 {
-			continue
-		}
-		rowDiscordID := ""
-		if len(row) > 1 {
-			rowDiscordID = row[1]
-		}
-		if err := writer.Write([]string{row[0], rowDiscordID}); err != nil {
+		if err := writer.Write(row); err != nil {
 			return err
 		}
 	}
