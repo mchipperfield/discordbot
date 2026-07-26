@@ -259,15 +259,13 @@ func TestRedeemResponseDecoding(t *testing.T) {
 
 // --- Step 2 tests ------------------------------------------------------------
 
-// mockKingShotAPI starts an httptest server that responds to /player (login) and
-// /gift_code (redeem) with the provided values, and returns a KingShot wired to it.
-func mockKingShotAPI(t *testing.T, loginCode int, redeemErrCode string) *KingShot {
+// mockKingShotAPI starts an httptest server that responds to /gift_code (redeem)
+// with the provided value, and returns a KingShot wired to it.
+func mockKingShotAPI(t *testing.T, _ int, redeemErrCode string) *KingShot {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/player":
-			json.NewEncoder(w).Encode(LoginResponse{Code: loginCode})
 		case "/gift_code":
 			json.NewEncoder(w).Encode(RedeemResponse{ErrCode: ErrCode(redeemErrCode)})
 		default:
@@ -363,60 +361,62 @@ func TestKingShot_isCodeKnown(t *testing.T) {
 	}
 }
 
-// TestKingShot_loadPlayerIDs verifies CSV parsing: valid file, empty file,
+// TestKingShot_loadPlayers verifies CSV parsing: valid file, empty file,
 // malformed rows, and missing file.
-func TestKingShot_loadPlayerIDs(t *testing.T) {
-	t.Run("valid CSV returns player IDs in order", func(t *testing.T) {
-		ks := &KingShot{playerIDFile: writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")}
-		ids, err := ks.loadPlayerIDs()
+func TestKingShot_loadPlayers(t *testing.T) {
+	t.Run("valid CSV returns players in order", func(t *testing.T) {
+		ks := &KingShot{playerIDFile: writeTempCSV(t, "player1,discord1,kingdom1\nplayer2,discord2,kingdom2\n")}
+		players, err := ks.loadPlayers()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		want := []string{"player1", "player2"}
-		if len(ids) != len(want) {
-			t.Fatalf("got %d IDs, want %d: %v", len(ids), len(want), ids)
+		want := []Player{
+			{ID: "player1", DiscordID: "discord1", KID: "kingdom1"},
+			{ID: "player2", DiscordID: "discord2", KID: "kingdom2"},
 		}
-		for i, id := range ids {
-			if id != want[i] {
-				t.Errorf("ids[%d] = %q, want %q", i, id, want[i])
+		if len(players) != len(want) {
+			t.Fatalf("got %d players, want %d: %v", len(players), len(want), players)
+		}
+		for i, p := range players {
+			if p != want[i] {
+				t.Errorf("players[%d] = %+v, want %+v", i, p, want[i])
 			}
 		}
 	})
 
 	t.Run("empty file returns empty slice", func(t *testing.T) {
 		ks := &KingShot{playerIDFile: writeTempCSV(t, "")}
-		ids, err := ks.loadPlayerIDs()
+		players, err := ks.loadPlayers()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(ids) != 0 {
-			t.Errorf("expected empty slice, got %v", ids)
+		if len(players) != 0 {
+			t.Errorf("expected empty slice, got %v", players)
 		}
 	})
 
-	t.Run("malformed rows are skipped", func(t *testing.T) {
-		// CSV with a short row that has only one field
-		ks := &KingShot{playerIDFile: writeTempCSV(t, "player1,discord1\nplayer2,discord2\n")}
-		ids, err := ks.loadPlayerIDs()
+	t.Run("rows with fewer than 3 fields are skipped", func(t *testing.T) {
+		ks := &KingShot{playerIDFile: writeTempCSV(t, "player1,discord1,kingdom1\nplayer2,discord2,kingdom2\n")}
+		players, err := ks.loadPlayers()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(ids) != 2 {
-			t.Errorf("expected 2 IDs, got %d: %v", len(ids), ids)
+		if len(players) != 2 {
+			t.Errorf("expected 2 players, got %d: %v", len(players), players)
 		}
 	})
 
 	t.Run("missing file returns error", func(t *testing.T) {
 		ks := &KingShot{playerIDFile: "/nonexistent/file.csv"}
-		_, err := ks.loadPlayerIDs()
+		_, err := ks.loadPlayers()
 		if err == nil {
 			t.Fatal("expected error for missing file, got nil")
 		}
 	})
 }
 
-// TestKingShot_redeemForPlayer tests the login → redeem → interpret pipeline
-// for a single player using a mock HTTP server.
+// TestKingShot_redeemForPlayer tests the redeem → interpret pipeline for a
+// single player using a mock HTTP server.
 func TestKingShot_redeemForPlayer(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -431,14 +431,14 @@ func TestKingShot_redeemForPlayer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ks := mockKingShotAPI(t, 0, tt.redeemErrCode)
-			got := ks.redeemForPlayer("player1", "TESTCODE")
+			got := ks.redeemForPlayer(Player{ID: "player1", KID: "kingdom1"}, "TESTCODE")
 			if got != tt.wantMsg {
 				t.Errorf("got %q, want %q", got, tt.wantMsg)
 			}
 		})
 	}
 
-	t.Run("login HTTP failure", func(t *testing.T) {
+	t.Run("redeem HTTP failure", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}))
@@ -447,9 +447,9 @@ func TestKingShot_redeemForPlayer(t *testing.T) {
 			loginURL: srv.URL + "/player", redeemURL: srv.URL + "/gift_code",
 			client: srv.Client(),
 		}
-		got := ks.redeemForPlayer("player1", "TESTCODE")
-		if got != "Failed to login." {
-			t.Errorf("got %q, want %q", got, "Failed to login.")
+		got := ks.redeemForPlayer(Player{ID: "player1", KID: "kingdom1"}, "TESTCODE")
+		if got != "Error redeeming code." {
+			t.Errorf("got %q, want %q", got, "Error redeeming code.")
 		}
 	})
 }
