@@ -41,7 +41,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Build Go Binary
-        run: GOOS=linux GOARCH=amd64 go build -v -o kingshot .
+        run: GOOS=linux GOARCH=amd64 go build -v -o discordbot .
 
       # Step 4: Upload the built binary as an artifact
       # This makes the "my-app-binary" file available to other jobs (like 'deploy')
@@ -49,7 +49,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: go-binary
-          path: kingshot
+          path: discordbot
 
   deploy:
     # Run the deploy job on the latest GitHub-hosted Ubuntu runner
@@ -67,7 +67,7 @@ jobs:
 
       # Step 2: Make the downloaded binary executable
       - name: Make binary executable
-        run: chmod +x kingshot
+        run: chmod +x discordbot
 
       # Step 3: Load SSH key into agent
       - uses: webfactory/ssh-agent@v0.9.0
@@ -80,16 +80,16 @@ jobs:
 
       - name: Copy binary to VM via scp
         run: |
-          scp -v ./kingshot ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:~/kingshot.tmp
+          scp -v ./discordbot ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:~/discordbot.tmp
 
       - name: Restart application on VM
         run: |
           ssh ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} '
           echo "Placing new binary..."
-          sudo rm -f ${{ secrets.VM_DEST_PATH }}/kingshot
-          sudo mv ~/kingshot.tmp ${{ secrets.VM_DEST_PATH }}/kingshot
-          sudo chmod +x ${{ secrets.VM_DEST_PATH }}/kingshot
+          sudo rm -f ${{ secrets.VM_DEST_PATH }}/discordbot
+          sudo mv ~/discordbot.tmp ${{ secrets.VM_DEST_PATH }}/discordbot
+          sudo chmod +x ${{ secrets.VM_DEST_PATH }}/discordbot
           echo "Restarting service..."
-          sudo systemctl restart kingshot.service
+          sudo systemctl restart goafbot.service
           echo "Deployment complete."
           '

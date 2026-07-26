@@ -2,12 +2,15 @@ package kingshot
 
 import (
 	"crypto/md5"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -56,23 +59,24 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // KingShot manages gift code state and handles all KingShot-related Discord
 // interactions. All mutable state is owned here; no package-level globals.
-type GiftCodeService struct {
+type KingShot struct {
 	mu           sync.Mutex
 	activeCodes  []string
 	expiredCodes []string
-	store        PlayerStore
+	playerIDFile string
 	client       *http.Client
 	loginURL     string
 	redeemURL    string
 }
 
-// NewGiftCodeService returns a GiftCodeService backed by store.
-func NewGiftCodeService(store PlayerStore, activeCodes ...string) *GiftCodeService {
-	return &GiftCodeService{
-		activeCodes: activeCodes,
-		store:       store,
-		loginURL:    defaultLoginURL,
-		redeemURL:   defaultRedeemURL,
+// NewKingShot returns a KingShot ready for production use. Any activeCodes
+// provided are pre-loaded as already-active codes.
+func NewKingShot(playerIDFile string, activeCodes ...string) *KingShot {
+	return &KingShot{
+		playerIDFile: playerIDFile,
+		activeCodes:  activeCodes,
+		loginURL:     defaultLoginURL,
+		redeemURL:    defaultRedeemURL,
 		client: &http.Client{
 			Transport: &transport{
 				limiter: rate.NewLimiter(rate.Every(2*time.Second), 1),
@@ -84,14 +88,14 @@ func NewGiftCodeService(store PlayerStore, activeCodes ...string) *GiftCodeServi
 // --- Discord handler wiring ---------------------------------------------------
 
 // Register adds the KingShot interaction and message handlers to s once at startup.
-func (ks *GiftCodeService) Register(s *discordgo.Session, giftCodeChannelID string) {
+func (ks *KingShot) Register(s *discordgo.Session, giftCodeChannelID string) {
 	s.AddHandler(ks.InteractionHandler())
 	s.AddHandler(ks.MessageHandler(giftCodeChannelID))
 }
 
 // GiftCodeCommands returns the slash command definitions for the KingShot gift
 // code system. Register these once in the Ready handler for the NXG guild.
-func (ks *GiftCodeService) GiftCodeCommands() []*discordgo.ApplicationCommand {
+func (ks *KingShot) GiftCodeCommands() []*discordgo.ApplicationCommand {
 	return []*discordgo.ApplicationCommand{
 		{
 			Name:        "register",
@@ -122,7 +126,7 @@ func (ks *GiftCodeService) GiftCodeCommands() []*discordgo.ApplicationCommand {
 
 // InteractionHandler returns a handler that dispatches /register and /code
 // interactions. Register this once at startup via session.AddHandler.
-func (ks *GiftCodeService) InteractionHandler() func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (ks *KingShot) InteractionHandler() func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		if i.Type != discordgo.InteractionApplicationCommand {
 			return
@@ -136,7 +140,7 @@ func (ks *GiftCodeService) InteractionHandler() func(s *discordgo.Session, i *di
 	}
 }
 
-func (ks *GiftCodeService) registerPlayer(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
@@ -163,20 +167,14 @@ func (ks *GiftCodeService) registerPlayer(s *discordgo.Session, i *discordgo.Int
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 
-	store := ks.store
-	if store == nil {
-		reply(s, i, "Error registering player ID.")
-		return
-	}
-
-	existingDiscordID, found, err := store.GetDiscordID(playerID)
+	playerToDiscord, err := ks.readPlayerFile()
 	if err != nil {
 		slog.Error("failed to read player file for registration", "error", err)
 		reply(s, i, "Error registering player ID.")
 		return
 	}
 
-	if found {
+	if existingDiscordID, ok := playerToDiscord[playerID]; ok {
 		if existingDiscordID == discordID {
 			reply(s, i, "This player ID is already registered to your Discord account.")
 		} else {
@@ -185,7 +183,8 @@ func (ks *GiftCodeService) registerPlayer(s *discordgo.Session, i *discordgo.Int
 		return
 	}
 
-	if err := store.Upsert(playerID, discordID); err != nil {
+	playerToDiscord[playerID] = discordID
+	if err := ks.writePlayerFile(playerToDiscord); err != nil {
 		slog.Error("failed to write player file", "error", err)
 		reply(s, i, "Error registering player ID.")
 		return
@@ -199,7 +198,7 @@ func (ks *GiftCodeService) registerPlayer(s *discordgo.Session, i *discordgo.Int
 	reply(s, i, response)
 }
 
-func (ks *GiftCodeService) addCode(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func (ks *KingShot) addCode(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
@@ -224,7 +223,7 @@ func (ks *GiftCodeService) addCode(s *discordgo.Session, i *discordgo.Interactio
 
 // MessageHandler returns a handler that watches channelID for bot-posted gift
 // codes and triggers automatic redemption. Register once at startup.
-func (ks *GiftCodeService) MessageHandler(channelID string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+func (ks *KingShot) MessageHandler(channelID string) func(s *discordgo.Session, m *discordgo.MessageCreate) {
 	codeRegex := regexp.MustCompile(`Gift Code: ([A-Z0-9]+)`)
 
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -300,22 +299,35 @@ func interpretRedeemResult(errCode ErrCode) redeemOutcome {
 
 // isCodeKnown reports whether code is already tracked by the gift code system.
 // Caller must hold ks.mu.
-func (ks *GiftCodeService) isCodeKnown(code string) (active, expired bool) {
+func (ks *KingShot) isCodeKnown(code string) (active, expired bool) {
 	return slices.Contains(ks.activeCodes, code), slices.Contains(ks.expiredCodes, code)
 }
 
 // loadPlayerIDs reads the player CSV file and returns all player IDs in row order.
-func (ks *GiftCodeService) loadPlayerIDs() ([]string, error) {
-	store := ks.store
-	if store == nil {
-		return nil, fmt.Errorf("player store is not configured")
+func (ks *KingShot) loadPlayerIDs() ([]string, error) {
+	file, err := os.Open(ks.playerIDFile)
+	if err != nil {
+		return nil, err
 	}
-	return store.ListPlayerIDs()
+	defer file.Close()
+
+	records, err := csv.NewReader(file).ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		if len(record) >= 1 {
+			ids = append(ids, record[0])
+		}
+	}
+	return ids, nil
 }
 
 // redeemForPlayer logs playerID in, redeems code, and returns a human-readable
 // result message.
-func (ks *GiftCodeService) redeemForPlayer(playerID, code string) string {
+func (ks *KingShot) redeemForPlayer(playerID, code string) string {
 	if _, err := ks.login(playerID); err != nil {
 		slog.Error("failed to login", "error", err, "player_id", playerID)
 		return "Failed to login."
@@ -340,7 +352,7 @@ func formatRedemptionReport(code string, playerCount int, results []string) stri
 
 // processNewCode validates newCode against the KingShot API and redeems it for
 // all registered players. It is safe to call concurrently.
-func (ks *GiftCodeService) processNewCode(newCode string) string {
+func (ks *KingShot) processNewCode(newCode string) string {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 
@@ -401,7 +413,7 @@ func (ks *GiftCodeService) processNewCode(newCode string) string {
 
 // redeemActiveCodes redeems all currently active codes for playerID and returns
 // a formatted summary string. Caller must hold ks.mu.
-func (ks *GiftCodeService) redeemActiveCodes(playerID string) string {
+func (ks *KingShot) redeemActiveCodes(playerID string) string {
 	if len(ks.activeCodes) == 0 {
 		return ""
 	}
@@ -434,10 +446,56 @@ func (ks *GiftCodeService) redeemActiveCodes(playerID string) string {
 	return "\n\n**Gift Code Redemption Results:**\n" + strings.Join(results, "\n")
 }
 
+// --- File I/O ----------------------------------------------------------------
+
+// readPlayerFile reads the CSV player file and returns a playerID → discordID map.
+// Caller must hold ks.mu.
+func (ks *KingShot) readPlayerFile() (map[string]string, error) {
+	playerToDiscord := make(map[string]string)
+
+	file, err := os.OpenFile(ks.playerIDFile, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	csvRecords, err := reader.ReadAll()
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+
+	for _, record := range csvRecords {
+		if len(record) == 2 {
+			playerToDiscord[record[0]] = record[1]
+		}
+	}
+	return playerToDiscord, nil
+}
+
+// writePlayerFile overwrites the CSV player file with the given map.
+// Caller must hold ks.mu.
+func (ks *KingShot) writePlayerFile(playerToDiscord map[string]string) error {
+	file, err := os.OpenFile(ks.playerIDFile, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	w := csv.NewWriter(file)
+	for pID, dID := range playerToDiscord {
+		if err := w.Write([]string{pID, dID}); err != nil {
+			return err
+		}
+	}
+	w.Flush()
+	return w.Error()
+}
+
 // --- KingShot API client -----------------------------------------------------
 
 // login authenticates fid with the KingShot API.
-func (ks *GiftCodeService) login(fid string) (*LoginResponse, error) {
+func (ks *KingShot) login(fid string) (*LoginResponse, error) {
 	data := map[string]string{
 		"fid":  fid,
 		"time": fmt.Sprintf("%d", time.Now().Unix()),
@@ -460,7 +518,7 @@ func (ks *GiftCodeService) login(fid string) (*LoginResponse, error) {
 }
 
 // redeemGiftCode submits a redemption request for fid and cdk.
-func (ks *GiftCodeService) redeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
+func (ks *KingShot) redeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
 	data := map[string]string{
 		"fid":  fid,
 		"cdk":  cdk,
