@@ -29,6 +29,7 @@ var (
 // aiSvc is optional — pass nil to skip the /ask command handler.
 func Register(s *discordgo.Session, guildID string, listenSound [][]byte, aiSvc *ai.Service) {
 	s.AddHandler(middleware.OnMessage(guildID, kit()))
+	s.AddHandler(middleware.OnMessage(guildID, yana()))
 	s.AddHandler(middleware.OnMessage(guildID, blondie()))
 	s.AddHandler(middleware.OnMessage(guildID, listenAudio(listenSound)))
 	s.AddHandler(middleware.OnMessage(guildID, dadJoke()))

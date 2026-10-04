@@ -13,8 +13,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/mchipperfield/discordbot/ai"
 	"github.com/mchipperfield/discordbot/dca"
-	"github.com/mchipperfield/discordbot/kingshot"
-	"github.com/mchipperfield/discordbot/middleware"
+	"github.com/mchipperfield/discordbot/server/alliance"
 	"github.com/mchipperfield/discordbot/server/nxg"
 	"github.com/mchipperfield/discordbot/server/sd"
 	"github.com/peterbourgon/ff"
@@ -41,6 +40,7 @@ const (
 	Server2985 = "1339671620880699433"
 	ServerNXG  = "1423406563850190850"
 	ServerWHS  = "1479709703155093587"
+	Server782  = "1554731132682108938"
 )
 
 func main() {
@@ -48,29 +48,25 @@ func main() {
 
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var (
-		token             = fs.String("bot_token", "", "bot authentication token")
-		serverId          = fs.String("server_id", Server2985, "server to listen on")
-		nxgID             = fs.String("nxg_server_id", ServerNXG, "NXG server id")
-		spellingURL       = fs.String("spelling_url", "https://gist.githubusercontent.com/ZekNikZ/5e7dd531df99be4408bd768ded36aad9/raw/c0ecc900022d60d54accb3770f2e737dcba738ad/british-american-words.txt", "URL to uk-us dictionary file")
-		geminiAPIKey      = fs.String("gemini_api_key", "", "API key for Gemini AI service")
-		playerIDFile      = fs.String("player_id_file", "player_ids.csv", "File to store player IDs")
-		giftCodeChannelID = fs.String("gift_code_channel_id", "1428776775621673001", "Channel ID to listen for gift codes in")
-		goafChannelID     = fs.String("goaf_channel_id", "", "Channel ID to post bear alerts in")
-		goafStateFile     = fs.String("goaf_state_file", "goaf_state.json", "File to persist GOAF alert state")
+		token        = fs.String("bot_token", "", "bot authentication token")
+		serverId     = fs.String("server_id", Server2985, "server to listen on")
+		nxgID        = fs.String("nxg_server_id", ServerNXG, "NXG server id")
+		_            = fs.String("spelling_url", "https://gist.githubusercontent.com/ZekNikZ/5e7dd531df99be4408bd768ded36aad9/raw/c0ecc900022d60d54accb3770f2e737dcba738ad/british-american-words.txt", "URL to uk-us dictionary file")
+		geminiAPIKey = fs.String("gemini_api_key", "", "API key for Gemini AI service")
+		_            = fs.String("player_id_file", "player_ids.csv", "File to store player IDs")
+		_            = fs.String("gift_code_channel_id", "1428776775621673001", "Channel ID to listen for gift codes in")
+		_            = fs.String("goaf_channel_id", "", "Channel ID to post bear alerts in")
+		_            = fs.String("goaf_state_file", "goaf_state.json", "File to persist GOAF alert state")
+		userID       = fs.String("kat_user_id", "1419035628850516060", "User ID for the kat bot")
 	)
 	if err := ff.Parse(fs,
 		os.Args[1:],
 		ff.WithEnvVarNoPrefix(),
 		ff.WithConfigFile(".env"),
+		ff.WithAllowMissingConfigFile(true),
 		ff.WithConfigFileParser(dotEnvParser),
 	); err != nil {
 		logger.Log("failed to parse flags", "error", err)
-		os.Exit(1)
-	}
-
-	spellings, err := LoadSpellingsFromURL(*spellingURL)
-	if err != nil {
-		logger.Info("failed to load spellings", "error", err)
 		os.Exit(1)
 	}
 
@@ -91,15 +87,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	ks := kingshot.NewKingShot(*playerIDFile)
-	goafSvc := nxg.NewGoafService(*goafChannelID, *goafStateFile)
-
 	// Register all handlers once at startup — never inside a Ready callback.
 	sd.Register(session, *serverId, dcaService.GetSound("wake_up.dca"))
 	nxg.Register(session, *nxgID, dcaService.GetSound("hey_listen.dca"), aiService)
-	goafSvc.Register(session)
-	ks.Register(session, *giftCodeChannelID)
-	session.AddHandler(middleware.OnAnyMessage(americanSpellingPolice(spellings)))
+
+	alliance.Register(session, Server782, *userID)
 
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
@@ -122,20 +114,6 @@ func main() {
 		for _, v := range askCommand {
 			if _, err := s.ApplicationCommandCreate(s.State.User.ID, "", v); err != nil {
 				logger.Info("cannot create command", "command", v.Name, "error", err)
-			}
-		}
-
-		// Register NXG guild commands.
-		nxgCommands := append(ks.GiftCodeCommands(), goafSvc.GoafCommands()...)
-		for _, v := range nxgCommands {
-			if _, err := s.ApplicationCommandCreate(s.State.User.ID, *nxgID, v); err != nil {
-				logger.Error("cannot create command", "command", v.Name, "error", err)
-			}
-		}
-
-		for _, v := range ks.GiftCodeCommands() {
-			if _, err := s.ApplicationCommandCreate(s.State.User.ID, ServerWHS, v); err != nil {
-				logger.Error("cannot create command", "command", v.Name, "error", err)
 			}
 		}
 
