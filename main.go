@@ -94,6 +94,7 @@ func main() {
 	nxg.Register(session, *nxgID, dcaService.GetSound("hey_listen.dca"), aiService)
 
 	alliance.Register(session, Server782, *userID)
+	session.AddHandler(shoutingPolice("1424459357361406074"))
 
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
 		slog.Info("Bot is up!", "user", r.User.String(), "session_id", r.SessionID, "version", r.Version)
