@@ -31,11 +31,12 @@ const (
 
 // Error codes returned by the KingShot API.
 const (
-	ErrCodeSuccess  = "20000"
-	ErrCodeClaimed  = "40008"
-	ErrCodeExpired  = "40007"
-	ErrCodeNotFound = "40014"
-	ErrCodeLogin    = "40009"
+	ErrCodeSuccess      = "20000"
+	ErrCodeClaimed      = "40008"
+	ErrCodeExpired      = "40007"
+	ErrCodeNotFound     = "40014"
+	ErrCodeLogin        = "40009"
+	ErrCodeLimitReached = "40005"
 )
 
 // r4RoleId is the Discord role that is allowed to add gift codes.
@@ -68,10 +69,12 @@ type KingShot struct {
 	redeemURL    string
 }
 
-// NewKingShot returns a KingShot ready for production use.
-func NewKingShot(playerIDFile string) *KingShot {
+// NewKingShot returns a KingShot ready for production use. Any activeCodes
+// provided are pre-loaded as already-active codes.
+func NewKingShot(playerIDFile string, activeCodes ...string) *KingShot {
 	return &KingShot{
 		playerIDFile: playerIDFile,
+		activeCodes:  activeCodes,
 		loginURL:     defaultLoginURL,
 		redeemURL:    defaultRedeemURL,
 		client: &http.Client{
@@ -102,6 +105,12 @@ func (ks *KingShot) GiftCodeCommands() []*discordgo.ApplicationCommand {
 					Type:        discordgo.ApplicationCommandOptionString,
 					Name:        "player-id",
 					Description: "Your KingShot player ID",
+					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "kid",
+					Description: "Your KingShot kingdom ID",
 					Required:    true,
 				},
 			},
@@ -146,20 +155,10 @@ func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 
-	playerID := i.ApplicationCommandData().Options[0].StringValue()
+	opts := i.ApplicationCommandData().Options
+	playerID := opts[0].StringValue()
+	kid := opts[1].StringValue()
 	discordID := i.Member.User.ID
-
-	loginResp, err := ks.login(playerID)
-	if err != nil {
-		slog.Error("failed to call login endpoint", "error", err)
-		reply(s, i, "Error validating player ID. Please try again later.")
-		return
-	}
-	if loginResp.Code != 0 {
-		slog.Info("invalid player id", "player_id", playerID, "response_code", loginResp.Code)
-		reply(s, i, "Invalid player ID provided.")
-		return
-	}
 
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
@@ -171,8 +170,8 @@ func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 
-	if existingDiscordID, ok := playerToDiscord[playerID]; ok {
-		if existingDiscordID == discordID {
+	if existing, ok := playerToDiscord[playerID]; ok {
+		if existing.DiscordID == discordID {
 			reply(s, i, "This player ID is already registered to your Discord account.")
 		} else {
 			reply(s, i, "This player ID is already registered to another Discord account.")
@@ -180,7 +179,7 @@ func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 
-	playerToDiscord[playerID] = discordID
+	playerToDiscord[playerID] = Player{ID: playerID, DiscordID: discordID, KID: kid}
 	if err := ks.writePlayerFile(playerToDiscord); err != nil {
 		slog.Error("failed to write player file", "error", err)
 		reply(s, i, "Error registering player ID.")
@@ -190,7 +189,7 @@ func (ks *KingShot) registerPlayer(s *discordgo.Session, i *discordgo.Interactio
 	slog.Info("user subscribed to bot", "player_id", playerID, "discord_id", discordID)
 
 	response := "**Registration Successful!**\n**Your player ID *" + playerID + "* has been registered successfully!**"
-	response += ks.redeemActiveCodes(playerID)
+	response += ks.redeemActiveCodes(Player{ID: playerID, DiscordID: discordID, KID: kid})
 
 	reply(s, i, response)
 }
@@ -287,6 +286,8 @@ func interpretRedeemResult(errCode ErrCode) redeemOutcome {
 		return redeemOutcome{msg: "Code is not valid.", codeInvalid: true}
 	case ErrCodeLogin:
 		return redeemOutcome{msg: "Unable to login.", loginFailed: true}
+	case ErrCodeLimitReached:
+		return redeemOutcome{msg: "Redemption Limit Reached"}
 	default:
 		return redeemOutcome{msg: "Failed to redeem code."}
 	}
@@ -298,8 +299,8 @@ func (ks *KingShot) isCodeKnown(code string) (active, expired bool) {
 	return slices.Contains(ks.activeCodes, code), slices.Contains(ks.expiredCodes, code)
 }
 
-// loadPlayerIDs reads the player CSV file and returns all player IDs in row order.
-func (ks *KingShot) loadPlayerIDs() ([]string, error) {
+// loadPlayers reads the player CSV file and returns all players in row order.
+func (ks *KingShot) loadPlayers() ([]Player, error) {
 	file, err := os.Open(ks.playerIDFile)
 	if err != nil {
 		return nil, err
@@ -311,28 +312,24 @@ func (ks *KingShot) loadPlayerIDs() ([]string, error) {
 		return nil, err
 	}
 
-	ids := make([]string, 0, len(records))
+	players := make([]Player, 0, len(records))
 	for _, record := range records {
-		if len(record) >= 1 {
-			ids = append(ids, record[0])
+		if len(record) >= 3 {
+			players = append(players, Player{ID: record[0], DiscordID: record[1], KID: record[2]})
 		}
 	}
-	return ids, nil
+	return players, nil
 }
 
-// redeemForPlayer logs playerID in, redeems code, and returns a human-readable
+// redeemForPlayer redeems code for the given player and returns a human-readable
 // result message.
-func (ks *KingShot) redeemForPlayer(playerID, code string) string {
-	if _, err := ks.login(playerID); err != nil {
-		slog.Error("failed to login", "error", err, "player_id", playerID)
-		return "Failed to login."
-	}
-	resp, err := ks.redeemGiftCode(playerID, code)
+func (ks *KingShot) redeemForPlayer(player Player, code string) string {
+	resp, err := ks.redeemGiftCode(RedeemRequest{PlayerID: player.ID, GiftCode: code, KID: player.KID})
 	if err != nil {
-		slog.Error("failed to redeem", "error", err, "player_id", playerID, "code", code)
+		slog.Error("failed to redeem", "error", err, "player_id", player.ID, "code", code)
 		return "Error redeeming code."
 	}
-	slog.Info("redeem response", "player_id", playerID, "code", code, "err_code", resp.ErrCode)
+	slog.Info("redeem response", "player_id", player.ID, "code", code, "err_code", resp.ErrCode)
 	return interpretRedeemResult(resp.ErrCode).msg
 }
 
@@ -357,30 +354,25 @@ func (ks *KingShot) processNewCode(newCode string) string {
 		return fmt.Sprintf("Code `%s` has expired and cannot be re-added.", newCode)
 	}
 
-	playerIDs, err := ks.loadPlayerIDs()
+	players, err := ks.loadPlayers()
 	if err != nil {
 		return fmt.Sprintf("Code `%s` has not been added, as we failed to open player file.", newCode)
 	}
 
-	if len(playerIDs) == 0 {
+	if len(players) == 0 {
 		ks.activeCodes = append(ks.activeCodes, newCode)
 		slog.Info("code added with no registered players", "code", newCode)
 		return fmt.Sprintf("There are no registered players, but code `%s` has been added to the active list.", newCode)
 	}
 
-	firstPlayerID := playerIDs[0]
-	if _, err := ks.login(firstPlayerID); err != nil {
-		slog.Error("failed to login before validating new code", "error", err)
-		return fmt.Sprintf("Failed to validate code `%s` due to an error. The code has not been added.", newCode)
-	}
-
-	redeemResp, err := ks.redeemGiftCode(firstPlayerID, newCode)
+	firstPlayer := players[0]
+	redeemResp, err := ks.redeemGiftCode(RedeemRequest{PlayerID: firstPlayer.ID, GiftCode: newCode, KID: firstPlayer.KID})
 	if err != nil {
 		slog.Error("failed to validate new code", "error", err, "code", newCode)
 		return fmt.Sprintf("Failed to validate code `%s` due to an error. The code has not been added.", newCode)
 	}
 
-	slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "player_id", firstPlayerID)
+	slog.Info("redeem response", "code", newCode, "err_code", redeemResp.ErrCode, "player_id", firstPlayer.ID)
 
 	outcome := interpretRedeemResult(redeemResp.ErrCode)
 	if outcome.codeExpired {
@@ -397,18 +389,18 @@ func (ks *KingShot) processNewCode(newCode string) string {
 	ks.activeCodes = append(ks.activeCodes, newCode)
 	slog.Info("code added", "code", newCode)
 
-	results := make([]string, 0, len(playerIDs))
-	results = append(results, fmt.Sprintf("Player `%s`: %s", firstPlayerID, outcome.msg))
-	for _, playerID := range playerIDs[1:] {
-		results = append(results, fmt.Sprintf("Player `%s`: %s", playerID, ks.redeemForPlayer(playerID, newCode)))
+	results := make([]string, 0, len(players))
+	results = append(results, fmt.Sprintf("Player `%s`: %s", firstPlayer.ID, outcome.msg))
+	for _, player := range players[1:] {
+		results = append(results, fmt.Sprintf("Player `%s`: %s", player.ID, ks.redeemForPlayer(player, newCode)))
 	}
 
-	return formatRedemptionReport(newCode, len(playerIDs), results)
+	return formatRedemptionReport(newCode, len(players), results)
 }
 
-// redeemActiveCodes redeems all currently active codes for playerID and returns
+// redeemActiveCodes redeems all currently active codes for player and returns
 // a formatted summary string. Caller must hold ks.mu.
-func (ks *KingShot) redeemActiveCodes(playerID string) string {
+func (ks *KingShot) redeemActiveCodes(player Player) string {
 	if len(ks.activeCodes) == 0 {
 		return ""
 	}
@@ -417,13 +409,13 @@ func (ks *KingShot) redeemActiveCodes(playerID string) string {
 	var codesToRemove []string
 
 	for _, code := range ks.activeCodes {
-		redeemResp, err := ks.redeemGiftCode(playerID, code)
+		redeemResp, err := ks.redeemGiftCode(RedeemRequest{PlayerID: player.ID, GiftCode: code, KID: player.KID})
 		if err != nil {
-			slog.Error("failed to redeem gift code after registration", "error", err, "code", code, "player_id", playerID)
+			slog.Error("failed to redeem gift code after registration", "error", err, "code", code, "player_id", player.ID)
 			results = append(results, fmt.Sprintf("`%s`: Error redeeming code.", code))
 			continue
 		}
-		slog.Info("redeem response", "code", code, "err_code", redeemResp.ErrCode, "player_id", playerID)
+		slog.Info("redeem response", "code", code, "err_code", redeemResp.ErrCode, "player_id", player.ID)
 
 		outcome := interpretRedeemResult(redeemResp.ErrCode)
 		if outcome.codeExpired || outcome.codeInvalid {
@@ -443,10 +435,10 @@ func (ks *KingShot) redeemActiveCodes(playerID string) string {
 
 // --- File I/O ----------------------------------------------------------------
 
-// readPlayerFile reads the CSV player file and returns a playerID → discordID map.
+// readPlayerFile reads the CSV player file and returns a playerID → Player map.
 // Caller must hold ks.mu.
-func (ks *KingShot) readPlayerFile() (map[string]string, error) {
-	playerToDiscord := make(map[string]string)
+func (ks *KingShot) readPlayerFile() (map[string]Player, error) {
+	players := make(map[string]Player)
 
 	file, err := os.OpenFile(ks.playerIDFile, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
@@ -461,16 +453,16 @@ func (ks *KingShot) readPlayerFile() (map[string]string, error) {
 	}
 
 	for _, record := range csvRecords {
-		if len(record) == 2 {
-			playerToDiscord[record[0]] = record[1]
+		if len(record) == 3 {
+			players[record[0]] = Player{ID: record[0], DiscordID: record[1], KID: record[2]}
 		}
 	}
-	return playerToDiscord, nil
+	return players, nil
 }
 
 // writePlayerFile overwrites the CSV player file with the given map.
 // Caller must hold ks.mu.
-func (ks *KingShot) writePlayerFile(playerToDiscord map[string]string) error {
+func (ks *KingShot) writePlayerFile(players map[string]Player) error {
 	file, err := os.OpenFile(ks.playerIDFile, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
@@ -478,8 +470,8 @@ func (ks *KingShot) writePlayerFile(playerToDiscord map[string]string) error {
 	defer file.Close()
 
 	w := csv.NewWriter(file)
-	for pID, dID := range playerToDiscord {
-		if err := w.Write([]string{pID, dID}); err != nil {
+	for _, p := range players {
+		if err := w.Write([]string{p.ID, p.DiscordID, p.KID}); err != nil {
 			return err
 		}
 	}
@@ -512,11 +504,12 @@ func (ks *KingShot) login(fid string) (*LoginResponse, error) {
 	return &loginResp, nil
 }
 
-// redeemGiftCode submits a redemption request for fid and cdk.
-func (ks *KingShot) redeemGiftCode(fid, cdk string) (*RedeemResponse, error) {
+// redeemGiftCode submits a redemption request using the provided RedeemRequest.
+func (ks *KingShot) redeemGiftCode(req RedeemRequest) (*RedeemResponse, error) {
 	data := map[string]string{
-		"fid":  fid,
-		"cdk":  cdk,
+		"fid":  req.PlayerID,
+		"cdk":  req.GiftCode,
+		"kid":  req.KID,
 		"time": fmt.Sprintf("%d", time.Now().Unix()),
 	}
 	payload, err := EncodePayload(data)
@@ -555,6 +548,23 @@ func EncodePayload(data map[string]string) (string, error) {
 		return "", err
 	}
 	return string(payload), nil
+}
+
+// --- Player and request types -----------------------------------------------
+
+// Player holds the per-player data stored in the CSV file.
+type Player struct {
+	ID        string // KingShot player ID (fid)
+	DiscordID string // Discord user snowflake
+	KID       string // Kingdom ID required by the redeem API
+}
+
+// RedeemRequest contains all the parameters needed to redeem a gift code for a
+// single player. Passing a struct keeps callers insulated from future API changes.
+type RedeemRequest struct {
+	PlayerID  string // KingShot player ID (fid)
+	GiftCode  string // the gift code to redeem (cdk)
+	KID       string // Kingdom ID
 }
 
 // --- API response types -------------------------------------------------------
