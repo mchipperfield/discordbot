@@ -14,7 +14,7 @@ func yana() func(*discordgo.Session, *discordgo.MessageCreate) {
 		if !isYana(m.Content) {
 			return
 		}
-		f, err := os.Open("yana.png")
+		f, err := os.Open("yana.jpg")
 		if err != nil {
 			slog.Info("failed to open yana image", "error", err)
 			return
